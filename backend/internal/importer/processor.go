@@ -1,11 +1,9 @@
 package importer
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -13,6 +11,7 @@ import (
 
 	"github.com/jittair/waypoint/backend/internal/integrations"
 	"github.com/jittair/waypoint/backend/internal/store"
+	"google.golang.org/genai"
 )
 
 type Extractor interface {
@@ -156,30 +155,32 @@ func sanitizeFilename(value string) string {
 	return value
 }
 
-type HTTPExtractor struct{ BaseURL, APIKey, Model string }
+type GeminiExtractor struct {
+	Client *genai.Client
+	Model  string
+}
 
-func (e HTTPExtractor) Extract(ctx context.Context, text string) ([]store.ReservationDraft, error) {
-	if e.BaseURL == "" || e.APIKey == "" || e.Model == "" {
-		return nil, fmt.Errorf("LLM extraction is not configured")
+func NewGeminiExtractor(ctx context.Context, apiKey, model string) (*GeminiExtractor, error) {
+	if apiKey == "" || model == "" {
+		return nil, fmt.Errorf("Gemini extraction is not configured")
 	}
-	payload := map[string]any{"model": e.Model, "input": text, "schema": map[string]any{"drafts": "array of reservation drafts with kind,title,supplier,confirmationCode,startsAt,endsAt,timeZone,location,notes,confidence"}}
-	body, err := json.Marshal(payload)
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: apiKey})
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.BaseURL, bytes.NewReader(body))
+	return &GeminiExtractor{Client: client, Model: model}, nil
+}
+
+func (e GeminiExtractor) Extract(ctx context.Context, text string) ([]store.ReservationDraft, error) {
+	if e.Client == nil || e.Model == "" {
+		return nil, fmt.Errorf("Gemini extraction is not configured")
+	}
+	response, err := e.Client.Models.GenerateContent(ctx, e.Model, genai.Text("Extract reservation details from the following text. Return every reservation found. Use RFC 3339 timestamps when known; otherwise use null. Use an empty string when a text field is unknown.\n\n"+text), &genai.GenerateContentConfig{
+		ResponseMIMEType:   "application/json",
+		ResponseJsonSchema: reservationDraftsSchema,
+	})
 	if err != nil {
 		return nil, err
-	}
-	request.Header.Set("Authorization", "Bearer "+e.APIKey)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("LLM extraction returned %s", response.Status)
 	}
 	var result struct {
 		Drafts []struct {
@@ -188,7 +189,7 @@ func (e HTTPExtractor) Extract(ctx context.Context, text string) ([]store.Reserv
 			Confidence                                                         float64
 		} `json:"drafts"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal([]byte(response.Text()), &result); err != nil {
 		return nil, err
 	}
 	drafts := make([]store.ReservationDraft, 0, len(result.Drafts))
@@ -196,4 +197,30 @@ func (e HTTPExtractor) Extract(ctx context.Context, text string) ([]store.Reserv
 		drafts = append(drafts, store.ReservationDraft{Kind: draft.Kind, Title: draft.Title, Supplier: draft.Supplier, ConfirmationCode: draft.ConfirmationCode, StartsAt: draft.StartsAt, EndsAt: draft.EndsAt, TimeZone: draft.TimeZone, Location: draft.Location, Notes: draft.Notes, Confidence: draft.Confidence})
 	}
 	return drafts, nil
+}
+
+var reservationDraftsSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"drafts": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"kind":             map[string]any{"type": "string", "enum": []string{"stay", "flight", "transport", "activity", "other"}},
+					"title":            map[string]any{"type": "string"},
+					"supplier":         map[string]any{"type": "string"},
+					"confirmationCode": map[string]any{"type": "string"},
+					"startsAt":         map[string]any{"anyOf": []any{map[string]any{"type": "string", "format": "date-time"}, map[string]any{"type": "null"}}},
+					"endsAt":           map[string]any{"anyOf": []any{map[string]any{"type": "string", "format": "date-time"}, map[string]any{"type": "null"}}},
+					"timeZone":         map[string]any{"type": "string"},
+					"location":         map[string]any{"type": "string"},
+					"notes":            map[string]any{"type": "string"},
+					"confidence":       map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+				},
+				"required": []string{"kind", "title", "supplier", "confirmationCode", "startsAt", "endsAt", "timeZone", "location", "notes", "confidence"},
+			},
+		},
+	},
+	"required": []string{"drafts"},
 }

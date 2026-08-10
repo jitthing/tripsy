@@ -36,8 +36,12 @@ func main() {
 		os.Exit(1)
 	}
 	var extractor importer.Extractor
-	if env("RESERVATION_LLM_BASE_URL", "") != "" {
-		extractor = importer.HTTPExtractor{BaseURL: env("RESERVATION_LLM_BASE_URL", ""), APIKey: env("RESERVATION_LLM_API_KEY", ""), Model: env("RESERVATION_LLM_MODEL", "")}
+	if apiKey, model := env("GEMINI_API_KEY", ""), env("GEMINI_MODEL", ""); apiKey != "" && model != "" {
+		extractor, err = importer.NewGeminiExtractor(ctx, apiKey, model)
+		if err != nil {
+			logger.Error("configure Gemini extractor", "error", err)
+			os.Exit(1)
+		}
 	}
 	importProcessor := &importer.Processor{Store: st, Resend: integrations.NewResendClient(env("RESEND_API_KEY", "")), Storage: integrations.NewStorage(supabaseURL, env("SUPABASE_SERVICE_ROLE_KEY", "")), Extractor: extractor}
 	calendarService := calendar.New(calendar.Config{ClientID: env("GOOGLE_CALENDAR_CLIENT_ID", ""), ClientSecret: env("GOOGLE_CALENDAR_CLIENT_SECRET", ""), RedirectURL: env("GOOGLE_CALENDAR_REDIRECT_URL", ""), StateSecret: env("GOOGLE_OAUTH_STATE_SECRET", ""), TokenKey: env("GOOGLE_TOKEN_ENCRYPTION_KEY", "")}, st)
