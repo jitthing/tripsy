@@ -1,91 +1,45 @@
-# AI Harness
+# Waypoint
 
-> A specs-driven agent workspace template for indie developers.
+Waypoint is a private, mobile-first travel organiser for a friend group. The frontend is React + Vite, the API is Go, and Supabase provides Google authentication, PostgreSQL, and private document storage.
 
-AI Harness is a reusable starter repo for building software with a strict
-multi-agent development loop and incremental MVP delivery. It gives you:
+## Run locally
 
-- a repo operating contract in `AGENTS.md`
-- reusable workflow skills under `.agents/skills/`
-- reusable agent presets under `.codex/agents/`
-- docs and templates for milestones, specs, architecture, handoffs, and context alignment
-- a first-run bootstrap path for turning the template into a real product repo
-- phase-based replanning to ship the next increment based on what actually shipped
+1. Create a Supabase project and run the SQL files in [supabase/migrations](/Users/jittair/Documents/ChatGPT/exchange/supabase/migrations/202608100001_waypoint.sql) in filename order. The second migration adds the route comparison board without changing existing trips.
+2. In Supabase Auth, enable Google and set its Google Cloud callback to `https://<project-ref>.supabase.co/auth/v1/callback`. Add `http://localhost:5173` to Supabase Auth redirect URLs.
+3. Copy `.env.example` to `.env.local` and set the public Supabase URL, anon key, and local API URL.
+4. Copy `backend/.env.example` to `backend/.env` and provide the direct Supabase Postgres connection URL and Supabase URL. Do not expose `DATABASE_URL` to the browser.
+5. Start the API with `cd backend && set -a && source .env && set +a && go run ./cmd/api`.
+6. In another terminal, run `npm install && npm run dev`.
 
-This repo is the harness, not your product runtime. Bring your own app, domain,
-and codebase. The harness exists to keep planning, implementation, review, and
-documentation aligned as your project grows.
+Use Node.js 22 or later for development and deployment.
 
-## Who It Is For
+## Deploy
 
-Solo and indie developers who want:
+1. Deploy the API using [render.yaml](/Users/jittair/Documents/ChatGPT/exchange/render.yaml), or deploy `backend/Dockerfile` to any container host. Set `DATABASE_URL`, `SUPABASE_URL`, and `CORS_ORIGINS=https://<your-frontend-domain>`.
+2. Deploy this repository root to Vercel. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_API_URL=https://<your-api-domain>` at build time. [vercel.json](/Users/jittair/Documents/ChatGPT/exchange/vercel.json) serves the SPA for all client routes.
+3. Add the production frontend origin to Supabase Auth redirect URLs and update `CORS_ORIGINS` with that exact origin.
+4. Have each friend sign in once before an owner adds them by email. The current v1 deliberately avoids sending invitation emails.
 
-- explicit milestone and spec gates
-- incremental, phase-based delivery (ship something real, then replan)
-- repeatable multi-agent workflows
-- stable repo terminology
-- architecture seams that keep future work clean without speculative overbuild
-- traceable handoffs between planning, implementation, testing, and docs
+## Reservation Imports and Calendar
 
-## Workflow Backbone
+- Configure a Resend receiving webhook for `POST https://<api-domain>/webhooks/resend/email-received` and the `email.received` event. The webhook endpoint validates the Svix signature before it accepts a job.
+- Set `RESEND_INBOUND_DOMAIN` to the receiving domain. Each trip can then show a random, private `imports-<token>@domain` forwarding address.
+- Set `SUPABASE_SERVICE_ROLE_KEY` only on the API. It stores raw email source and attachments in the private `trip-imports` bucket; never expose it to the browser.
+- PDF text extraction is available through Poppler in the API container. The image-OCR runtime is installed for future scanned-document extraction; unsupported or low-confidence source material remains a review draft.
+- Create a separate Google OAuth web client. Add `https://<api-domain>/calendar/callback` as its authorized redirect URI, then set the five `GOOGLE_*` server variables. Waypoint creates and syncs a dedicated calendar, not the user's existing personal calendars.
 
-1. Run `$bootstrap` immediately after forking to determine the MVP boundary,
-   derive architecture seams, build an MVP milestone ladder, and replace this
-   harness-template README with a project-specific public overview.
-2. Shape the first milestone with `$requirements`.
-3. Accept a milestone in `docs/milestones/` when scope is settled.
-4. Draft an implementation spec with `$spec`, referencing architecture seams.
-5. Pressure-test the spec before implementation.
-6. Implement through `$dev-loop`, which respects architecture seams and includes
-   verification by delegating to `$test`.
-7. Invoke `$test` directly for standalone or ad hoc verification when you do
-   not need the full dev loop.
-8. When a phase ships (all its milestones are complete), trigger `plan-next`
-   to propose the next phase's Draft milestones based on what shipped.
-9. Realign docs, skills, `user-journeys.html`, and agent rules through
-   `$context` when decisions settle (auto-triggered by `AGENTS.md`).
+## Security model
 
-## Repository Layout
+- Google OAuth is performed by Supabase Auth; the React app receives only the public anon key and a short-lived user JWT.
+- The Go API validates each Bearer token against the Supabase JWKS and checks membership before accessing trip data.
+- `trip-documents` is a private bucket. Its RLS policies allow only members of the UUID-named trip folder to upload, list, and retrieve files.
+- Files are restricted to PDF, JPEG, PNG, and WebP, with a 10 MB maximum. Files are retrieved with a 60-second signed URL.
+- Route comparisons are user-entered notes and saved links. Waypoint does not scrape transport providers or submit bookings.
+- Never put the Supabase service role key, database URL, Google client secret, or OAuth secret in `VITE_*` variables.
 
-```text
-.
-├── AGENTS.md
-├── user-journeys.html
-├── .agents/skills/
-├── .codex/agents/
-└── docs/
-    ├── adr/
-    ├── ARCHITECTURE.md
-    ├── PRODUCT.md
-    ├── CONTEXT.md
-    ├── WORKFLOWS.md
-    ├── AGENT_ROLES.md
-    ├── DOCS_POLICY.md
-    ├── milestones/
-    ├── specs/
-    └── techdebt/
+## Verification
+
+```bash
+npm run build
+(cd backend && go test ./... && go build ./...)
 ```
-
-## How To Use
-
-1. Start from this repo as a template.
-2. Run `$bootstrap` as the first real task after the fork.
-3. Answer the grilling session until the product backbone is coherent, then
-   explicitly confirm the concrete bootstrap summary: MVP boundary, ordered
-   MVP milestone ladder, and explicit post-MVP cutoff.
-4. Let bootstrap tailor `README.md` into a project-specific public overview
-   while keeping deeper product detail in `docs/PRODUCT.md`.
-5. Shape and implement milestones one phase at a time. Run `plan-next` after
-   each phase to propose the next increment.
-6. Use `user-journeys.html` at the repo root as the visual map of what the
-   harness supports and what the intended developer paths are.
-7. Keep the workflow docs and agent presets strict unless you intentionally
-   change the harness rules.
-8. Add your application code beside this harness structure.
-
-## Non-Goals
-
-- application runtime code
-- framework-specific scaffolding
-- domain-specific examples
-- historical traces, accepted milestones, or completed specs from another repo
