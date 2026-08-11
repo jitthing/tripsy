@@ -11,5 +11,17 @@ services:
         sync: false
       - key: CORS_ORIGINS
         sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_WEBHOOK_SECRET
+        sync: false
+      - key: RESEND_INBOUND_DOMAIN
+        sync: false
+      - key: RESEND_INBOUND_ADDRESS
+        sync: false
+      - key: RESEND_INBOUND_OWNER_ID
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
       - key: PORT
         value: "8080"

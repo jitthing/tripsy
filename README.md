@@ -23,7 +23,7 @@ Use Node.js 22 or later for development and deployment.
 ## Reservation Imports and Calendar
 
 - Configure a Resend receiving webhook for `POST https://<api-domain>/webhooks/resend/email-received` and the `email.received` event. The webhook endpoint validates the Svix signature before it accepts a job.
-- Set `RESEND_INBOUND_DOMAIN` to the receiving domain. Each trip can then show a random, private `imports-<token>@domain` forwarding address.
+- Set `RESEND_INBOUND_DOMAIN` to the receiving domain. The recommended mode uses one central `RESEND_INBOUND_ADDRESS` and `RESEND_INBOUND_OWNER_ID`; forwarded emails appear in the owner's Inbox for review. Legacy per-trip `imports-<token>@domain` addresses remain supported.
 - Set `SUPABASE_SERVICE_ROLE_KEY` only on the API. It stores raw email source and attachments in the private `trip-imports` bucket; never expose it to the browser.
 - PDF text extraction is available through Poppler in the API container. The image-OCR runtime is installed for future scanned-document extraction; unsupported or low-confidence source material remains a review draft.
 - Create a separate Google OAuth web client. Add `https://<api-domain>/calendar/callback` as its authorized redirect URI, then set the five `GOOGLE_*` server variables. Waypoint creates and syncs a dedicated calendar, not the user's existing personal calendars.

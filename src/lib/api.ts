@@ -11,7 +11,7 @@ export type RouteOptionType = 'direct_flight' | 'flight_train' | 'train' | 'bus'
 export type RouteOptionStatus = 'considering' | 'shortlisted' | 'booked' | 'dismissed'
 export type RouteOption = { id: string; tripId: string; createdBy: string; title: string; routeType: RouteOptionType; origin: string; destination: string; departsAt?: string; arrivesAt?: string; durationMinutes?: number; transfers: number; priceAmount?: number; currency?: string; bookingUrl: string; notes: string; status: RouteOptionStatus; createdAt: string }
 export type Member = { id: string; email: string; displayName: string; avatarUrl: string; role: 'owner' | 'member' }
-export type ReservationImport = { id: string; tripId: string; sender: string; subject: string; receivedAt?: string; status: 'queued' | 'processing' | 'review' | 'approved' | 'discarded' | 'failed'; errorMessage: string; usedLlm: boolean; createdAt: string }
+export type ReservationImport = { id: string; tripId?: string; ownerId: string; sender: string; subject: string; receivedAt?: string; status: 'queued' | 'processing' | 'review' | 'approved' | 'discarded' | 'failed'; errorMessage: string; usedLlm: boolean; createdAt: string }
 export type ReservationDraft = { id: string; importId: string; kind: PlanKind; title: string; supplier: string; confirmationCode: string; startsAt?: string; endsAt?: string; timeZone: string; location: string; notes: string; confidence: number; status: 'pending' | 'approved' | 'discarded' }
 export type ImportDetail = { import: ReservationImport; drafts: ReservationDraft[]; attachments: Array<{ id: string; filename: string; contentType: string; sizeBytes: number }> }
 export type CalendarStatus = { connected: boolean; email?: string; calendarId?: string; status?: string; lastError?: string; lastSyncedAt?: string }
@@ -33,6 +33,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listTrips: () => request<Trip[]>('/v1/trips'),
+  listInbox: () => request<ReservationImport[]>('/v1/inbox'),
   getTrip: (tripId: string) => request<TripDetail>(`/v1/trips/${tripId}/`),
   createTrip: (input: Omit<Trip, 'id' | 'ownerId' | 'createdAt'>) => request<Trip>('/v1/trips', { method: 'POST', body: JSON.stringify(input) }),
   createPlan: (tripId: string, input: Omit<Plan, 'id' | 'tripId' | 'createdBy'>) => request<Plan>(`/v1/trips/${tripId}/plans`, { method: 'POST', body: JSON.stringify(input) }),
@@ -46,6 +47,7 @@ export const api = {
   getImport: (importId: string) => request<ImportDetail>(`/v1/imports/${importId}`),
   approveDraft: (importId: string, draft: ReservationDraft) => request<Plan>(`/v1/imports/${importId}/drafts/${draft.id}/approve`, { method: 'POST', body: JSON.stringify({ kind: draft.kind, title: draft.title, startsAt: draft.startsAt, endsAt: draft.endsAt, location: draft.location, confirmationCode: draft.confirmationCode, notes: draft.notes, timeZone: draft.timeZone }) }),
   discardDraft: (importId: string, draftId: string) => request<void>(`/v1/imports/${importId}/drafts/${draftId}/discard`, { method: 'POST' }),
+  assignImport: (importId: string, tripId: string) => request<void>(`/v1/imports/${importId}/assign`, { method: 'POST', body: JSON.stringify({ tripId }) }),
   calendarStatus: () => request<CalendarStatus>('/v1/calendar/status'),
   calendarConnect: () => request<{ url: string }>('/v1/calendar/connect', { method: 'POST' }),
   calendarSync: () => request<{ queued: boolean }>('/v1/calendar/sync', { method: 'POST' }),

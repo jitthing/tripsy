@@ -24,6 +24,8 @@ import (
 type Config struct {
 	AllowedOrigins      []string
 	InboundDomain       string
+	InboundAddress      string
+	InboundOwnerID      string
 	ResendWebhookSecret string
 	ImportProcessor     *importer.Processor
 	Calendar            *calendar.Service
@@ -35,6 +37,8 @@ type API struct {
 	logger              *slog.Logger
 	origins             map[string]bool
 	inboundDomain       string
+	inboundAddress      string
+	inboundOwnerID      string
 	resendWebhookSecret string
 	calendar            *calendar.Service
 	appURL              string
@@ -48,7 +52,7 @@ func New(st *store.Store, verifier *auth.Verifier, logger *slog.Logger, cfg Conf
 	for _, origin := range cfg.AllowedOrigins {
 		origins[strings.TrimSpace(origin)] = true
 	}
-	a := &API{store: st, verifier: verifier, logger: logger, origins: origins, inboundDomain: cfg.InboundDomain, resendWebhookSecret: cfg.ResendWebhookSecret, calendar: cfg.Calendar, appURL: cfg.AppURL}
+	a := &API{store: st, verifier: verifier, logger: logger, origins: origins, inboundDomain: cfg.InboundDomain, inboundAddress: strings.ToLower(strings.TrimSpace(cfg.InboundAddress)), inboundOwnerID: cfg.InboundOwnerID, resendWebhookSecret: cfg.ResendWebhookSecret, calendar: cfg.Calendar, appURL: cfg.AppURL}
 	r := chi.NewRouter()
 	r.Use(a.recoverer, a.cors, a.requestLog)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +64,7 @@ func New(st *store.Store, verifier *auth.Verifier, logger *slog.Logger, cfg Conf
 		r.Use(a.authenticate)
 		r.Get("/me", a.me)
 		r.Get("/trips", a.listTrips)
+		r.Get("/inbox", a.listInbox)
 		r.Post("/trips", a.createTrip)
 		r.Route("/trips/{tripID}", func(r chi.Router) {
 			r.Get("/", a.tripDetail)
@@ -84,6 +89,7 @@ func New(st *store.Store, verifier *auth.Verifier, logger *slog.Logger, cfg Conf
 		r.Get("/imports/{importID}", a.importDetail)
 		r.Post("/imports/{importID}/drafts/{draftID}/approve", a.approveDraft)
 		r.Post("/imports/{importID}/drafts/{draftID}/discard", a.discardDraft)
+		r.Post("/imports/{importID}/assign", a.assignImport)
 		r.Get("/calendar/status", a.calendarStatus)
 		r.Post("/calendar/connect", a.calendarConnect)
 		r.Post("/calendar/sync", a.calendarSync)
@@ -181,8 +187,14 @@ func (a *API) resendWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var address store.ImportAddress
+	var ownerID string
 	found := false
 	for _, recipient := range event.Data.To {
+		if a.inboundAddress != "" && strings.ToLower(strings.TrimSpace(recipient)) == a.inboundAddress {
+			ownerID = a.inboundOwnerID
+			found = ownerID != ""
+			break
+		}
 		token := importToken(recipient)
 		if token == "" {
 			continue
@@ -190,6 +202,7 @@ func (a *API) resendWebhook(w http.ResponseWriter, r *http.Request) {
 		candidate, lookupErr := a.store.ImportAddressForToken(r.Context(), token)
 		if lookupErr == nil {
 			address = candidate
+			ownerID = ""
 			found = true
 			break
 		}
@@ -198,7 +211,11 @@ func (a *API) resendWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	_, _, err = a.store.CreateInboundImport(r.Context(), address.TripID, event.Data.EmailID, r.Header.Get("svix-id"), event.Data.From, event.Data.Subject, &event.Data.CreatedAt)
+	var tripID *string
+	if address.TripID != "" {
+		tripID = &address.TripID
+	}
+	_, _, err = a.store.CreateInboundImport(r.Context(), tripID, ownerID, event.Data.EmailID, r.Header.Get("svix-id"), event.Data.From, event.Data.Subject, &event.Data.CreatedAt)
 	if err != nil {
 		a.logger.Error("persist inbound import", "error", err)
 		fail(w, http.StatusInternalServerError, "could not receive import")
@@ -277,6 +294,37 @@ func (a *API) listTrips(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, http.StatusOK, trips)
+}
+
+func (a *API) listInbox(w http.ResponseWriter, r *http.Request) {
+	items, err := a.store.ListInbox(r.Context(), userID(r))
+	if err != nil {
+		a.handleError(w, err)
+		return
+	}
+	respond(w, http.StatusOK, items)
+}
+
+func (a *API) assignImport(w http.ResponseWriter, r *http.Request) {
+	importID, ok := tripParam(w, r, "importID")
+	if !ok {
+		return
+	}
+	var input struct {
+		TripID string `json:"tripId"`
+	}
+	if !readJSON(w, r, &input) {
+		return
+	}
+	if input.TripID == "" {
+		fail(w, http.StatusBadRequest, "tripId is required")
+		return
+	}
+	if err := a.store.AssignImport(r.Context(), importID, input.TripID, userID(r)); err != nil {
+		a.handleError(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]string{"status": "assigned"})
 }
 
 type tripRequest struct {
