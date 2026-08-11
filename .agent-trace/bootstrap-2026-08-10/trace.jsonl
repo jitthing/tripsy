@@ -1,0 +1,9 @@
+{"event":"trace_start","workflow":"bootstrap","timestamp":"2026-08-10","detail":"Bootstrap initiated for a fresh harness fork."}
+{"event":"skill_usage","skill":"bootstrap","detail":"User invoked the bootstrap workflow."}
+{"event":"skill_usage","skill":"codex-agent-tracer","detail":"Trace folder and canonical log started before substantial work."}
+{"event":"context_read","paths":["AGENTS.md","README.md","docs/WORKFLOWS.md","docs/DOCS_POLICY.md","docs/PRODUCT.md","docs/CONTEXT.md","docs/ARCHITECTURE.md","docs/AGENT_ROLES.md"],"detail":"Required bootstrap and grilling documents read."}
+{"event":"agent_delegation","agent":"explorer","detail":"Read-only repository-state inspection delegated."}
+{"event":"agent_delegation","agent":"spec-griller","detail":"Read-only bootstrap ambiguity and failure-mode review delegated."}
+{"event":"delegate_result","agent":"explorer","detail":"Confirmed clean, untouched harness-template state with no downstream product direction or runtime commands."}
+{"event":"delegate_result","agent":"spec-griller","detail":"Confirmed Draft status; identified missing founder decisions as the bootstrap blockers."}
+{"event":"handoff","status":"Draft","detail":"Awaiting founder decisions and explicit confirmation before durable product documentation updates."}

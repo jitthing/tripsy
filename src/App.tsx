@@ -56,18 +56,19 @@ function Workspace({ session }: { session: Session }) {
   const [detail, setDetail] = useState<TripDetail | null>(null)
   const [view, setView] = useState<View>('overview')
   const [loading, setLoading] = useState(true)
+  const [tripListFailed, setTripListFailed] = useState(false)
   const [error, setError] = useState('')
   const [toast, setToast] = useState('')
   const [sheet, setSheet] = useState<'trip' | 'plan' | 'route' | null>(null)
 
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(''), 3000) }
   async function loadTrips(preferredID?: string) {
-    setLoading(true); setError('')
-    try { const nextTrips = await api.listTrips(); setTrips(nextTrips); setActiveTripID((current) => preferredID || current || nextTrips[0]?.id || '') } catch (err) { setError(message(err)) } finally { setLoading(false) }
+    setLoading(true); setTripListFailed(false); setError('')
+    try { const nextTrips = await api.listTrips(); setTrips(nextTrips); setActiveTripID((current) => preferredID || current || nextTrips[0]?.id || '') } catch (err) { setError(message(err)); setTripListFailed(true) } finally { setLoading(false) }
   }
   async function loadDetail(tripID: string) {
     if (!tripID) { setDetail(null); return }
-    setError('')
+    setDetail(null); setError('')
     try { setDetail(await api.getTrip(tripID)) } catch (err) { setError(message(err)) }
   }
   useEffect(() => { loadTrips() }, [])
@@ -99,7 +100,7 @@ function Workspace({ session }: { session: Session }) {
   return <main className="app-shell production-shell">
     <header className="topbar"><div className="avatar">{initials(profileName)}</div><label className="trip-picker"><Globe2 size={15} /><select value={activeTripID} onChange={(event) => setActiveTripID(event.target.value)} aria-label="Active trip">{trips.map((trip) => <option key={trip.id} value={trip.id}>{trip.title}</option>)}</select><ChevronDown size={15} /></label><button className="icon-button" onClick={() => supabase?.auth.signOut()} aria-label="Sign out"><LogOut size={18} /></button></header>
     {error && <div className="error-banner">{error}<button onClick={() => setError('')} aria-label="Dismiss error"><X size={15} /></button></div>}
-    {!activeTripID || !detail ? <EmptyTrips onCreate={() => setSheet('trip')} /> : <>
+    {tripListFailed ? <TripListState error={error} onRetry={() => loadTrips()} /> : !activeTripID ? <EmptyTrips onCreate={() => setSheet('trip')} /> : !detail ? <TripDetailState error={error} onRetry={() => loadDetail(activeTripID)} /> : <>
       <TripHeader trip={detail.trip} checklist={detail.checklist} />
       <nav className="section-tabs" aria-label="Trip sections"><button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>Overview</button><button className={view === 'plans' ? 'active' : ''} onClick={() => setView('plans')}>Plans</button><button className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}>Calendar</button><button className={view === 'imports' ? 'active' : ''} onClick={() => setView('imports')}>Imports</button><button className={view === 'routes' ? 'active' : ''} onClick={() => setView('routes')}>Routes</button><button className={view === 'documents' ? 'active' : ''} onClick={() => setView('documents')}>Documents</button><button className={view === 'members' ? 'active' : ''} onClick={() => setView('members')}>People</button></nav>
       <section className="content">{view === 'overview' && <Overview detail={detail} onToggle={toggleChecklist} onAddChecklist={addChecklist} onViewChange={setView} />}{view === 'plans' && <Plans detail={detail} onAdd={() => setSheet('plan')} />}{view === 'calendar' && <CalendarView plans={detail.plans} />}{view === 'imports' && <Imports tripID={activeTripID} notify={notify} />}{view === 'routes' && <RouteOptions options={detail.routeOptions} onAdd={() => setSheet('route')} />}{view === 'documents' && <Documents detail={detail} onReload={() => loadDetail(activeTripID)} notify={notify} />}{view === 'members' && <Members detail={detail} tripID={activeTripID} onReload={() => loadDetail(activeTripID)} notify={notify} />}</section>
@@ -113,6 +114,14 @@ function Workspace({ session }: { session: Session }) {
 function TripHeader({ trip, checklist }: { trip: Trip; checklist: ChecklistItem[] }) {
   const complete = checklist.filter((item) => item.isComplete).length
   return <section className="trip-summary"><div className="summary-copy"><p className="eyebrow">ACTIVE TRIP</p><h1>{trip.destination}</h1><p className="trip-dates"><CalendarDays size={15} /> {formatDateRange(trip.startDate, trip.endDate)} <span>·</span> {nights(trip.startDate, trip.endDate)} nights</p></div><div className="stamp"><svg viewBox="0 0 42 42" aria-hidden="true"><circle className="stamp-track" cx="21" cy="21" r="17" /><circle className="stamp-value" cx="21" cy="21" r="17" pathLength="100" style={{ strokeDasharray: `${checklist.length ? complete / checklist.length * 100 : 0} 100` }} /></svg><strong>{complete}/{checklist.length}</strong><small>ready</small></div></section>
+}
+
+function TripDetailState({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return <section className="empty-trips"><span className="brand-mark">W</span><p className="eyebrow">TRIP DETAILS</p><h1>{error ? 'We couldn’t load this trip.' : 'Loading your trip…'}</h1><p>{error || 'Getting your itinerary and travel details ready.'}</p>{error && <button className="save-button" onClick={onRetry}>Try again</button>}</section>
+}
+
+function TripListState({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return <section className="empty-trips"><span className="brand-mark">W</span><p className="eyebrow">YOUR TRAVEL SPACE</p><h1>We couldn’t load your trips.</h1><p>{error}</p><button className="save-button" onClick={onRetry}>Try again</button></section>
 }
 
 function Overview({ detail, onToggle, onAddChecklist, onViewChange }: { detail: TripDetail; onToggle: (item: ChecklistItem) => void; onAddChecklist: (title: string) => Promise<void>; onViewChange: (view: View) => void }) {
