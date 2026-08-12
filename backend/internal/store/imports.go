@@ -11,8 +11,9 @@ import (
 var ErrConflict = errors.New("conflict")
 
 type ImportAddress struct {
-	TripID string `json:"tripId"`
-	Token  string `json:"token"`
+	TripID    string `json:"tripId"`
+	Token     string `json:"token"`
+	CreatedBy string `json:"-"`
 }
 
 type ReservationImport struct {
@@ -75,7 +76,7 @@ func (s *Store) EnsureImportAddress(ctx context.Context, tripID, userID, token s
 
 func (s *Store) ImportAddressForToken(ctx context.Context, token string) (ImportAddress, error) {
 	var address ImportAddress
-	err := s.DB.QueryRow(ctx, `select trip_id, token from trip_import_addresses where token=$1`, token).Scan(&address.TripID, &address.Token)
+	err := s.DB.QueryRow(ctx, `select trip_id, token, created_by from trip_import_addresses where token=$1`, token).Scan(&address.TripID, &address.Token, &address.CreatedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ImportAddress{}, ErrNotFound
 	}
@@ -212,7 +213,8 @@ func (s *Store) ApproveDraft(ctx context.Context, draftID, userID string, plan P
 		return Plan{}, err
 	}
 	defer tx.Rollback(ctx)
-	var tripID, confirmation, supplier string
+	var tripID *string
+	var confirmation, supplier string
 	err = tx.QueryRow(ctx, `select i.trip_id,d.confirmation_code,d.supplier from reservation_drafts d join reservation_imports i on i.id=d.import_id where d.id=$1 and d.status='pending'`, draftID).Scan(&tripID, &confirmation, &supplier)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Plan{}, ErrNotFound
@@ -220,7 +222,10 @@ func (s *Store) ApproveDraft(ctx context.Context, draftID, userID string, plan P
 	if err != nil {
 		return Plan{}, err
 	}
-	allowed, err := canAccessTripTx(ctx, tx, tripID, userID)
+	if tripID == nil {
+		return Plan{}, errors.New("import must be assigned to a trip before approval")
+	}
+	allowed, err := canAccessTripTx(ctx, tx, *tripID, userID)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -250,7 +255,7 @@ func (s *Store) ApproveDraft(ctx context.Context, draftID, userID string, plan P
 }
 
 func (s *Store) DiscardDraft(ctx context.Context, draftID, userID string) error {
-	var tripID string
+	var tripID *string
 	err := s.DB.QueryRow(ctx, `select i.trip_id from reservation_drafts d join reservation_imports i on i.id=d.import_id where d.id=$1 and d.status='pending'`, draftID).Scan(&tripID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
@@ -258,7 +263,10 @@ func (s *Store) DiscardDraft(ctx context.Context, draftID, userID string) error 
 	if err != nil {
 		return err
 	}
-	allowed, err := s.CanAccessTrip(ctx, tripID, userID)
+	if tripID == nil {
+		return errors.New("import must be assigned to a trip before discarding")
+	}
+	allowed, err := s.CanAccessTrip(ctx, *tripID, userID)
 	if err != nil {
 		return err
 	}

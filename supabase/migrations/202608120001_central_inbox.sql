@@ -13,4 +13,8 @@ create policy "users view own or trip imports" on public.reservation_imports for
   using (owner_id = auth.uid() or (trip_id is not null and public.is_trip_member(trip_id)));
 create policy "users update own or trip imports" on public.reservation_imports for update to authenticated
   using (owner_id = auth.uid() or (trip_id is not null and public.is_trip_member(trip_id)))
-  with check (owner_id = auth.uid() or (trip_id is not null and public.is_trip_member(trip_id)));
+  -- An owner may assign an import only to a trip they belong to. Keep the
+  -- target-trip check in WITH CHECK; checking ownership only would allow an
+  -- owner to point an import at an unrelated trip.
+  with check (owner_id = auth.uid() and (trip_id is null or public.is_trip_member(trip_id))
+    or (trip_id is not null and public.is_trip_member(trip_id) and owner_id = auth.uid()));

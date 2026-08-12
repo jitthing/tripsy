@@ -202,7 +202,9 @@ func (a *API) resendWebhook(w http.ResponseWriter, r *http.Request) {
 		candidate, lookupErr := a.store.ImportAddressForToken(r.Context(), token)
 		if lookupErr == nil {
 			address = candidate
-			ownerID = ""
+			// Legacy trip-bound addresses predate owner_id on imports. Use the
+			// address creator so the UUID column is never populated with ''.
+			ownerID = candidate.CreatedBy
 			found = true
 			break
 		}
