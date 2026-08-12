@@ -1,4 +1,58 @@
+# ==========================================
+# Environments & Secrets (CRITICAL)
+# ==========================================
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
+*.env
+*.pem
+*.key
+
+# Keep the example file public as a template
+!.env.example
+
+# ==========================================
+# Dependencies & Package Managers
+# ==========================================
+node_modules/
+jspm_packages/
+web_modules/
+.npm
+.yarn/
+vendor/
+.venv/
+venv/
+env/
+
+# ==========================================
+# Production Builds & Artifacts
+# ==========================================
+dist/
+build/
+out/
+.next/
+.nuxt/
+*.deploy
+
+# ==========================================
+# Logs and Diagnostics
+# ==========================================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ==========================================
+# IDE & System Trash
+# ==========================================
 .DS_Store
-.agent-trace/
-/node_modules
-*/.env
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln

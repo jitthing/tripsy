@@ -444,8 +444,11 @@ func (s *Store) listRouteOptions(ctx context.Context, tripID string) ([]RouteOpt
 	defer rows.Close()
 	return pgx.CollectRows(rows, pgx.RowToStructByPos[RouteOption])
 }
+
+const listMembersQuery = `select p.id,p.email,p.display_name,coalesce(p.avatar_url,'') as avatar_url,tm.role from trip_members tm join profiles p on p.id=tm.user_id where tm.trip_id=$1 order by tm.role desc,p.display_name`
+
 func (s *Store) listMembers(ctx context.Context, tripID string) ([]Member, error) {
-	rows, err := s.DB.Query(ctx, `select p.id,p.email,p.display_name,coalesce(p.avatar_url,''),tm.role from trip_members tm join profiles p on p.id=tm.user_id where tm.trip_id=$1 order by tm.role desc,p.display_name`, tripID)
+	rows, err := s.DB.Query(ctx, listMembersQuery, tripID)
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,8 @@
+flowchart TD
+  U["Regression-test request"] --> R["Requirements scope"]
+  R --> E["Explore failure and test seams"]
+  E --> S["Focused regression scope"]
+  S --> I["Implement tests and repair"]
+  I --> V["Verify"]
+  V --> Rv["Review"]
+  Rv --> H["Handoff"]
