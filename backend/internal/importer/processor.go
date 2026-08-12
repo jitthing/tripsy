@@ -46,13 +46,17 @@ func (p *Processor) process(ctx context.Context, item store.ReservationImport) e
 	if err != nil {
 		return err
 	}
+	prefix := "inbox/" + item.OwnerID
+	if item.TripID != nil {
+		prefix = *item.TripID
+	}
 	rawPath := ""
 	if email.RawURL != "" {
 		raw, downloadErr := p.Resend.Download(ctx, email.RawURL)
 		if downloadErr != nil {
 			return downloadErr
 		}
-		rawPath = item.TripID + "/" + item.ID + "/source.eml"
+		rawPath = prefix + "/" + item.ID + "/source.eml"
 		if err := p.Storage.Put(ctx, "trip-imports", rawPath, "message/rfc822", raw); err != nil {
 			return err
 		}
@@ -73,7 +77,7 @@ func (p *Processor) process(ctx context.Context, item store.ReservationImport) e
 		if len(bytes) > 10*1024*1024 {
 			return fmt.Errorf("attachment %s exceeds 10 MB", attachment.Filename)
 		}
-		path := item.TripID + "/" + item.ID + "/attachments/" + sanitizeFilename(attachment.Filename)
+		path := prefix + "/" + item.ID + "/attachments/" + sanitizeFilename(attachment.Filename)
 		if err := p.Storage.Put(ctx, "trip-imports", path, attachment.ContentType, bytes); err != nil {
 			return err
 		}
@@ -82,7 +86,7 @@ func (p *Processor) process(ctx context.Context, item store.ReservationImport) e
 			text += "\n" + extractPDFText(bytes)
 		}
 	}
-	textPath := item.TripID + "/" + item.ID + "/extracted.txt"
+	textPath := prefix + "/" + item.ID + "/extracted.txt"
 	if err := p.Storage.Put(ctx, "trip-imports", textPath, "text/plain; charset=utf-8", []byte(text)); err != nil {
 		return err
 	}
