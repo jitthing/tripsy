@@ -90,6 +90,7 @@ func New(st *store.Store, verifier *auth.Verifier, logger *slog.Logger, cfg Conf
 		r.Post("/imports/{importID}/drafts/{draftID}/approve", a.approveDraft)
 		r.Post("/imports/{importID}/drafts/{draftID}/discard", a.discardDraft)
 		r.Post("/imports/{importID}/assign", a.assignImport)
+		r.Post("/imports/{importID}/retry", a.retryImport)
 		r.Get("/calendar/status", a.calendarStatus)
 		r.Post("/calendar/connect", a.calendarConnect)
 		r.Post("/calendar/sync", a.calendarSync)
@@ -327,6 +328,18 @@ func (a *API) assignImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, http.StatusOK, map[string]string{"status": "assigned"})
+}
+
+func (a *API) retryImport(w http.ResponseWriter, r *http.Request) {
+	importID, ok := tripParam(w, r, "importID")
+	if !ok {
+		return
+	}
+	if err := a.store.RetryImport(r.Context(), importID, userID(r)); err != nil {
+		a.handleError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 type tripRequest struct {
