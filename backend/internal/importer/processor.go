@@ -1,9 +1,12 @@
 package importer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -11,7 +14,6 @@ import (
 
 	"github.com/jittair/waypoint/backend/internal/integrations"
 	"github.com/jittair/waypoint/backend/internal/store"
-	"google.golang.org/genai"
 )
 
 type Extractor interface {
@@ -159,41 +161,78 @@ func sanitizeFilename(value string) string {
 	return value
 }
 
-type GeminiExtractor struct {
-	Client *genai.Client
+const openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
+
+// OpenRouterExtractor extracts reservation drafts using the OpenRouter API
+// (OpenAI-compatible chat completions).
+type OpenRouterExtractor struct {
+	APIKey string
 	Model  string
+	Client *http.Client
 }
 
-func NewGeminiExtractor(ctx context.Context, apiKey, model string) (*GeminiExtractor, error) {
+func NewOpenRouterExtractor(apiKey, model string) (*OpenRouterExtractor, error) {
 	if apiKey == "" || model == "" {
-		return nil, fmt.Errorf("Gemini extraction is not configured")
+		return nil, fmt.Errorf("OpenRouter extraction is not configured")
 	}
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: apiKey})
-	if err != nil {
-		return nil, err
-	}
-	return &GeminiExtractor{Client: client, Model: model}, nil
+	return &OpenRouterExtractor{
+		APIKey: apiKey,
+		Model:  model,
+		Client: &http.Client{Timeout: 60 * time.Second},
+	}, nil
 }
 
-func (e GeminiExtractor) Extract(ctx context.Context, text string) ([]store.ReservationDraft, error) {
-	if e.Client == nil || e.Model == "" {
-		return nil, fmt.Errorf("Gemini extraction is not configured")
+func (e *OpenRouterExtractor) Extract(ctx context.Context, text string) ([]store.ReservationDraft, error) {
+	if e.APIKey == "" || e.Model == "" {
+		return nil, fmt.Errorf("OpenRouter extraction is not configured")
 	}
-	response, err := e.Client.Models.GenerateContent(ctx, e.Model, genai.Text("Extract reservation details from the following text. Return every reservation found. Use RFC 3339 timestamps when known; otherwise use null. Use an empty string when a text field is unknown.\n\n"+text), &genai.GenerateContentConfig{
-		ResponseMIMEType:   "application/json",
-		ResponseJsonSchema: reservationDraftsSchema,
-	})
+	payload := openRouterRequest{
+		Model: e.Model,
+		Messages: []openRouterMessage{
+			{Role: "user", Content: "Extract reservation details from the following text. Return every reservation found. Use RFC 3339 timestamps when known; otherwise use null. Use an empty string when a text field is unknown.\n\n" + text},
+		},
+		ResponseFormat: &openRouterFormat{
+			Type: "json_schema",
+			JSONSchema: &openRouterJSONSchema{
+				Name:   "reservation_drafts",
+				Schema: reservationDraftsSchema,
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	var result struct {
-		Drafts []struct {
-			Kind, Title, Supplier, ConfirmationCode, TimeZone, Location, Notes string
-			StartsAt, EndsAt                                                   *time.Time
-			Confidence                                                         float64
-		} `json:"drafts"`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal([]byte(response.Text()), &result); err != nil {
+	req.Header.Set("Authorization", "Bearer "+e.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("openrouter request failed with status %d: %s", resp.StatusCode, string(raw))
+	}
+	var completion openRouterResponse
+	if err := json.Unmarshal(raw, &completion); err != nil {
+		return nil, err
+	}
+	if completion.Error != nil {
+		return nil, fmt.Errorf("openrouter error: %s", completion.Error.Message)
+	}
+	if len(completion.Choices) == 0 {
+		return nil, fmt.Errorf("openrouter returned no choices")
+	}
+	var result reservationDraftsResult
+	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &result); err != nil {
 		return nil, err
 	}
 	drafts := make([]store.ReservationDraft, 0, len(result.Drafts))
@@ -201,6 +240,46 @@ func (e GeminiExtractor) Extract(ctx context.Context, text string) ([]store.Rese
 		drafts = append(drafts, store.ReservationDraft{Kind: draft.Kind, Title: draft.Title, Supplier: draft.Supplier, ConfirmationCode: draft.ConfirmationCode, StartsAt: draft.StartsAt, EndsAt: draft.EndsAt, TimeZone: draft.TimeZone, Location: draft.Location, Notes: draft.Notes, Confidence: draft.Confidence})
 	}
 	return drafts, nil
+}
+
+type openRouterRequest struct {
+	Model          string              `json:"model"`
+	Messages       []openRouterMessage `json:"messages"`
+	ResponseFormat *openRouterFormat   `json:"response_format,omitempty"`
+}
+
+type openRouterMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type openRouterFormat struct {
+	Type       string               `json:"type"`
+	JSONSchema *openRouterJSONSchema `json:"json_schema,omitempty"`
+}
+
+type openRouterJSONSchema struct {
+	Name   string         `json:"name"`
+	Schema map[string]any `json:"schema"`
+}
+
+type openRouterResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type reservationDraftsResult struct {
+	Drafts []struct {
+		Kind, Title, Supplier, ConfirmationCode, TimeZone, Location, Notes string
+		StartsAt, EndsAt                                                   *time.Time
+		Confidence                                                         float64
+	} `json:"drafts"`
 }
 
 var reservationDraftsSchema = map[string]any{

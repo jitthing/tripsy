@@ -36,10 +36,10 @@ func main() {
 		os.Exit(1)
 	}
 	var extractor importer.Extractor
-	if apiKey, model := env("GEMINI_API_KEY", ""), env("GEMINI_MODEL", ""); apiKey != "" && model != "" {
-		extractor, err = importer.NewGeminiExtractor(ctx, apiKey, model)
+	if apiKey, model := env("OPENROUTER_API_KEY", ""), env("OPENROUTER_MODEL", ""); apiKey != "" && model != "" {
+		extractor, err = importer.NewOpenRouterExtractor(apiKey, model)
 		if err != nil {
-			logger.Error("configure Gemini extractor", "error", err)
+			logger.Error("configure OpenRouter extractor", "error", err)
 			os.Exit(1)
 		}
 	}
