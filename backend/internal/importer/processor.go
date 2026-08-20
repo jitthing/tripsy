@@ -111,7 +111,12 @@ func (p *Processor) process(ctx context.Context, item store.ReservationImport) e
 			drafts[index].Kind = "other"
 		}
 	}
-	return p.Store.CompleteImport(ctx, item.ID, rawPath, textPath, usedLLM, drafts, attachments)
+	if err := p.Store.CompleteImport(ctx, item.ID, rawPath, textPath, usedLLM, drafts, attachments); err != nil {
+		return err
+	}
+	// Keep suspected duplicates visible so the user can compare them before
+	// deciding whether the message is a change, a duplicate, or a new booking.
+	return p.Store.MarkPotentialDuplicate(ctx, item.ID, item.OwnerID, drafts)
 }
 func fallbackDraft(subject, text string) []store.ReservationDraft {
 	kind := "other"
