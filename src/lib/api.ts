@@ -17,6 +17,11 @@ export type ImportDetail = { import: ReservationImport; drafts: ReservationDraft
 export type CalendarStatus = { connected: boolean; email?: string; calendarId?: string; status?: string; lastError?: string; lastSyncedAt?: string }
 export type TripDetail = { trip: Trip; plans: Plan[]; checklist: ChecklistItem[]; documents: Document[]; routeOptions: RouteOption[]; members: Member[] }
 
+// Update replaces the whole resource, so create and update take the same shape.
+export type TripInput = Omit<Trip, 'id' | 'ownerId' | 'createdAt'>
+export type PlanInput = Omit<Plan, 'id' | 'tripId' | 'createdBy'>
+export type RouteOptionInput = Omit<RouteOption, 'id' | 'tripId' | 'createdBy' | 'createdAt'>
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!supabase) throw new Error('Supabase is not configured')
   const { data: { session } } = await supabase.auth.getSession()
@@ -35,13 +40,22 @@ export const api = {
   listTrips: () => request<Trip[]>('/v1/trips'),
   listInbox: () => request<ReservationImport[]>('/v1/inbox'),
   getTrip: (tripId: string) => request<TripDetail>(`/v1/trips/${tripId}/`),
-  createTrip: (input: Omit<Trip, 'id' | 'ownerId' | 'createdAt'>) => request<Trip>('/v1/trips', { method: 'POST', body: JSON.stringify(input) }),
-  createPlan: (tripId: string, input: Omit<Plan, 'id' | 'tripId' | 'createdBy'>) => request<Plan>(`/v1/trips/${tripId}/plans`, { method: 'POST', body: JSON.stringify(input) }),
+  createTrip: (input: TripInput) => request<Trip>('/v1/trips', { method: 'POST', body: JSON.stringify(input) }),
+  updateTrip: (tripId: string, input: TripInput) => request<Trip>(`/v1/trips/${tripId}/`, { method: 'PATCH', body: JSON.stringify(input) }),
+  deleteTrip: (tripId: string) => request<void>(`/v1/trips/${tripId}/`, { method: 'DELETE' }),
+  createPlan: (tripId: string, input: PlanInput) => request<Plan>(`/v1/trips/${tripId}/plans`, { method: 'POST', body: JSON.stringify(input) }),
+  updatePlan: (tripId: string, planId: string, input: PlanInput) => request<Plan>(`/v1/trips/${tripId}/plans/${planId}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  deletePlan: (tripId: string, planId: string) => request<void>(`/v1/trips/${tripId}/plans/${planId}`, { method: 'DELETE' }),
   updateChecklist: (tripId: string, item: ChecklistItem) => request<ChecklistItem>(`/v1/trips/${tripId}/checklist/${item.id}`, { method: 'PATCH', body: JSON.stringify(item) }),
   createChecklist: (tripId: string, input: Pick<ChecklistItem, 'title' | 'isComplete' | 'sortOrder'>) => request<ChecklistItem>(`/v1/trips/${tripId}/checklist`, { method: 'POST', body: JSON.stringify(input) }),
+  deleteChecklist: (tripId: string, itemId: string) => request<void>(`/v1/trips/${tripId}/checklist/${itemId}`, { method: 'DELETE' }),
   addMember: (tripId: string, email: string) => request<Member>(`/v1/trips/${tripId}/members`, { method: 'POST', body: JSON.stringify({ email }) }),
+  deleteMember: (tripId: string, userId: string) => request<void>(`/v1/trips/${tripId}/members/${userId}`, { method: 'DELETE' }),
   createDocument: (tripId: string, input: Omit<Document, 'id' | 'tripId' | 'uploadedBy' | 'createdAt'>) => request<Document>(`/v1/trips/${tripId}/documents`, { method: 'POST', body: JSON.stringify(input) }),
-  createRouteOption: (tripId: string, input: Omit<RouteOption, 'id' | 'tripId' | 'createdBy' | 'createdAt'>) => request<RouteOption>(`/v1/trips/${tripId}/route-options`, { method: 'POST', body: JSON.stringify(input) }),
+  deleteDocument: (tripId: string, documentId: string) => request<void>(`/v1/trips/${tripId}/documents/${documentId}`, { method: 'DELETE' }),
+  createRouteOption: (tripId: string, input: RouteOptionInput) => request<RouteOption>(`/v1/trips/${tripId}/route-options`, { method: 'POST', body: JSON.stringify(input) }),
+  updateRouteOption: (tripId: string, optionId: string, input: RouteOptionInput) => request<RouteOption>(`/v1/trips/${tripId}/route-options/${optionId}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  deleteRouteOption: (tripId: string, optionId: string) => request<void>(`/v1/trips/${tripId}/route-options/${optionId}`, { method: 'DELETE' }),
   getImportAddress: (tripId: string) => request<{ address: string }>(`/v1/trips/${tripId}/import-address`, { method: 'POST' }),
   listImports: (tripId: string) => request<ReservationImport[]>(`/v1/trips/${tripId}/imports`),
   getImport: (importId: string) => request<ImportDetail>(`/v1/imports/${importId}`),
