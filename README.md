@@ -17,6 +17,7 @@ Use Node.js 22 or later for development and deployment.
 
 1. Deploy the API using [render.yaml](/Users/jittair/Documents/ChatGPT/exchange/render.yaml), or deploy `backend/Dockerfile` to any container host. Set `DATABASE_URL`, `SUPABASE_URL`, and `CORS_ORIGINS=https://<your-frontend-domain>`.
 2. Deploy this repository root to Vercel. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_API_URL=https://<your-api-domain>` at build time. [vercel.json](/Users/jittair/Documents/ChatGPT/exchange/vercel.json) serves the SPA for all client routes.
+   The app uses real paths (`/trip/<id>/plans`, `/inbox`, `/search`), so the host must return `index.html` for any unmatched path. After deploying, load a deep link such as `https://<your-frontend-domain>/inbox` directly in a fresh tab; a 404 there means the SPA fallback is not configured.
 3. Add the production frontend origin to Supabase Auth redirect URLs and update `CORS_ORIGINS` with that exact origin.
 4. Have each friend sign in once before an owner adds them by email. The current v1 deliberately avoids sending invitation emails.
 
@@ -25,6 +26,7 @@ Use Node.js 22 or later for development and deployment.
 - Configure a Resend receiving webhook for `POST https://<api-domain>/webhooks/resend/email-received` and the `email.received` event. The webhook endpoint validates the Svix signature before it accepts a job.
 - Set `RESEND_INBOUND_DOMAIN` to the receiving domain. The recommended mode uses one central `RESEND_INBOUND_ADDRESS` and `RESEND_INBOUND_OWNER_ID`; forwarded emails appear in the owner's Inbox for review. Legacy per-trip `imports-<token>@domain` addresses remain supported.
 - Set `SUPABASE_SERVICE_ROLE_KEY` only on the API. It stores raw email source and attachments in the private `trip-imports` bucket; never expose it to the browser.
+- When the extractor cannot run — no `OPENROUTER_*` variables, an API error, or an email with no readable text — the import still completes with a low-confidence keyword draft. The reason is logged at error level and stored on the import, and the Inbox shows an "AI extraction didn't run" warning above the draft. A silent fallback is a bug, not a normal outcome.
 - PDF text extraction is available through Poppler in the API container. The image-OCR runtime is installed for future scanned-document extraction; unsupported or low-confidence source material remains a review draft.
 - Create a separate Google OAuth web client. Add `https://<api-domain>/calendar/callback` as its authorized redirect URI, then set the five `GOOGLE_*` server variables. Waypoint creates and syncs a dedicated calendar, not the user's existing personal calendars.
 

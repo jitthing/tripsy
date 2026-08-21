@@ -2,13 +2,12 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import type { Session } from '@supabase/supabase-js'
 import {
   CalendarDays, Check, ChevronDown, FileText, FolderOpen, Globe2, Hotel, LoaderCircle,
-  Clock3, LogOut, MapPin, MoreHorizontal, PackageCheck, Pencil, Plane, Plus, Route, Settings2,
-  ShieldCheck, Ticket, TrainFront, Trash2, Upload, UsersRound, X,
+  Clock3, LogOut, MapPin, MoreHorizontal, PackageCheck, Pencil, Plane, Plus, Route, Search, Settings2,
+  ShieldCheck, Ticket, TrainFront, Trash2, TriangleAlert, Upload, UsersRound, X,
 } from 'lucide-react'
 import { api, type ChecklistItem, type Document, type ImportDetail, type Plan, type PlanInput, type PlanKind, type ReservationImport, type RouteOption, type RouteOptionInput, type RouteOptionStatus, type RouteOptionType, type Trip, type TripDetail, type TripInput } from './lib/api'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
-
-type View = 'overview' | 'plans' | 'routes' | 'documents' | 'imports' | 'calendar' | 'members' | 'inbox'
+import { sectionLabels, sections, useRoute, type Section } from './lib/router'
 
 type Sheet =
   | { kind: 'trip' }
@@ -16,6 +15,7 @@ type Sheet =
   | { kind: 'plan'; plan?: Plan }
   | { kind: 'planDetail'; plan: Plan }
   | { kind: 'route'; option?: RouteOption }
+  | { kind: 'switcher' }
   | { kind: 'confirm'; title: string; body: string; confirmLabel: string; run: () => Promise<void> }
 
 const coverColors = ['#1d4c46', '#d5634d', '#3f6f9a', '#8a5fa8', '#b8862c', '#2f7a54']
@@ -61,10 +61,9 @@ function SignInScreen() {
 }
 
 function Workspace({ session }: { session: Session }) {
+  const [route, navigate] = useRoute()
   const [trips, setTrips] = useState<Trip[]>([])
-  const [activeTripID, setActiveTripID] = useState('')
   const [detail, setDetail] = useState<TripDetail | null>(null)
-  const [view, setView] = useState<View>('overview')
   const [loading, setLoading] = useState(true)
   const [tripListFailed, setTripListFailed] = useState(false)
   const [error, setError] = useState('')
@@ -83,9 +82,21 @@ function Workspace({ session }: { session: Session }) {
     if (!action) return
     try { await action() } catch (err) { setError(message(err)) }
   }
+  // The URL owns which trip and section are showing. Inbox and Search sit outside a trip
+  // but still act on the one you came from, so the last trip id survives those routes.
+  const [lastTripID, setLastTripID] = useState('')
+  useEffect(() => { if (route.name === 'trip') setLastTripID(route.tripId) }, [route])
+  const activeTripID = route.name === 'trip' ? route.tripId : lastTripID
+  const section = route.name === 'trip' ? route.section : 'overview'
+  function openTrip(tripId: string, next: Section = 'overview', replace = false) { navigate({ name: 'trip', tripId, section: next }, replace) }
+  function openSection(next: Section) { if (activeTripID) openTrip(activeTripID, next) }
+
   async function loadTrips(preferredID?: string) {
     setLoading(true); setTripListFailed(false); setError('')
-    try { const nextTrips = await api.listTrips(); setTrips(nextTrips); setActiveTripID((current) => preferredID || current || nextTrips[0]?.id || '') } catch (err) { setError(message(err)); setTripListFailed(true) } finally { setLoading(false) }
+    try {
+      const nextTrips = await api.listTrips(); setTrips(nextTrips)
+      return nextTrips
+    } catch (err) { setError(message(err)); setTripListFailed(true); return [] } finally { setLoading(false) }
   }
   // A quiet reload refreshes in place, so an undo doesn't blank the screen back to skeletons.
   async function loadDetail(tripID: string, quiet = false) {
@@ -94,7 +105,12 @@ function Workspace({ session }: { session: Session }) {
     setError('')
     try { setDetail(await api.getTrip(tripID)) } catch (err) { setError(message(err)) }
   }
-  useEffect(() => { loadTrips() }, [])
+  useEffect(() => {
+    loadTrips().then((nextTrips) => {
+      // A bare "/" — a fresh visit or an OAuth return — lands on the first trip without adding history.
+      if (route.name === 'home' && nextTrips[0]) openTrip(nextTrips[0].id, 'overview', true)
+    })
+  }, [])
   useEffect(() => { loadDetail(activeTripID) }, [activeTripID])
 
   async function createTrip(input: TripInput) {
@@ -170,26 +186,34 @@ function Workspace({ session }: { session: Session }) {
   })
   const removeTrip = (trip: Trip) => confirmThen('Delete this trip?', `“${trip.title}” and everything in it — plans, documents, and route options — will be permanently deleted. This can’t be undone.`, 'Delete trip', async () => {
     setSheet(null)
-    try { await api.deleteTrip(trip.id); setActiveTripID(''); await loadTrips(); notify('Trip deleted') } catch (err) { setError(message(err)) }
+    try {
+      await api.deleteTrip(trip.id); setDetail(null)
+      const remaining = await loadTrips()
+      if (remaining[0]) openTrip(remaining[0].id, 'overview', true); else navigate({ name: 'home' }, true)
+      notify('Trip deleted')
+    } catch (err) { setError(message(err)) }
   })
 
   const profileName = session.user.user_metadata.full_name || session.user.email?.split('@')[0] || 'Traveller'
   if (loading && !detail && !tripListFailed) return <WorkspaceSkeleton />
   return <main className="app-shell production-shell">
-    <header className="topbar"><div className="avatar">{initials(profileName)}</div><label className="trip-picker"><Globe2 size={15} /><select value={activeTripID} onChange={(event) => setActiveTripID(event.target.value)} aria-label="Active trip">{trips.map((trip) => <option key={trip.id} value={trip.id}>{trip.title}</option>)}</select><ChevronDown size={15} /></label><div className="topbar-actions">{detail && <button className="icon-button" onClick={() => setSheet({ kind: 'tripSettings' })} aria-label="Trip settings"><Settings2 size={18} /></button>}<button className="icon-button" onClick={() => supabase?.auth.signOut()} aria-label="Sign out"><LogOut size={18} /></button></div></header>
+    <header className="topbar"><div className="avatar">{initials(profileName)}</div><button className="trip-picker" onClick={() => setSheet({ kind: 'switcher' })} aria-label="Switch trip"><Globe2 size={15} /><span>{detail?.trip.title || 'Waypoint'}</span><ChevronDown size={15} /></button><div className="topbar-actions">{detail && <button className="icon-button" onClick={() => setSheet({ kind: 'tripSettings' })} aria-label="Trip settings"><Settings2 size={18} /></button>}<button className="icon-button" onClick={() => supabase?.auth.signOut()} aria-label="Sign out"><LogOut size={18} /></button></div></header>
     {error && <div className="error-banner">{error}<button onClick={() => setError('')} aria-label="Dismiss error"><X size={15} /></button></div>}
-    {view === 'inbox' ? <Inbox trips={trips} notify={notify} /> : tripListFailed ? <TripListState error={error} onRetry={() => loadTrips()} /> : !activeTripID ? <EmptyTrips onCreate={() => setSheet({ kind: 'trip' })} /> : !detail ? (error ? <TripDetailState error={error} onRetry={() => loadDetail(activeTripID)} /> : <TripSkeleton />) : <>
+    {route.name === 'inbox' ? <section className="area-view"><Inbox trips={trips} onOpenTrip={(tripId) => openTrip(tripId, 'imports')} notify={notify} /></section>
+      : route.name === 'search' ? <section className="area-view"><SearchView detail={detail} onSelectPlan={(plan) => setSheet({ kind: 'planDetail', plan })} onOpenSection={openSection} /></section>
+      : tripListFailed ? <TripListState error={error} onRetry={() => loadTrips()} /> : !activeTripID ? <EmptyTrips onCreate={() => setSheet({ kind: 'trip' })} /> : !detail ? (error ? <TripDetailState error={error} onRetry={() => loadDetail(activeTripID)} /> : <TripSkeleton />) : <>
       <TripHeader trip={detail.trip} checklist={detail.checklist} />
-      <nav className="section-tabs" aria-label="Trip sections"><button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>Overview</button><button className={view === 'plans' ? 'active' : ''} onClick={() => setView('plans')}>Plans</button><button className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}>Calendar</button><button className={view === 'imports' ? 'active' : ''} onClick={() => setView('imports')}>Imports</button><button className={view === 'routes' ? 'active' : ''} onClick={() => setView('routes')}>Routes</button><button className={view === 'documents' ? 'active' : ''} onClick={() => setView('documents')}>Documents</button><button className={view === 'members' ? 'active' : ''} onClick={() => setView('members')}>People</button></nav>
-      <section className="content">{view === 'overview' && <Overview detail={detail} onToggle={toggleChecklist} onAddChecklist={addChecklist} onRemoveChecklist={removeChecklist} onViewChange={setView} onSelectPlan={(plan) => setSheet({ kind: 'planDetail', plan })} />}{view === 'plans' && <Plans detail={detail} onAdd={() => setSheet({ kind: 'plan' })} onSelectPlan={(plan) => setSheet({ kind: 'planDetail', plan })} />}{view === 'calendar' && <CalendarView plans={detail.plans} />}{view === 'imports' && <Imports tripID={activeTripID} notify={notify} />}{view === 'routes' && <RouteOptions options={detail.routeOptions} onAdd={() => setSheet({ kind: 'route' })} onEdit={(option) => setSheet({ kind: 'route', option })} onDelete={removeRouteOption} />}{view === 'documents' && <Documents detail={detail} onReload={() => loadDetail(activeTripID)} onDelete={removeDocument} notify={notify} />}{view === 'members' && <Members detail={detail} tripID={activeTripID} onReload={() => loadDetail(activeTripID)} onRemove={removeMember} notify={notify} />}</section>
-      <button className="fab" onClick={() => setSheet({ kind: view === 'routes' ? 'route' : 'plan' })} aria-label={view === 'routes' ? 'Add a route option' : 'Add a plan'}><Plus size={25} /></button>
+      <nav className="section-tabs" aria-label="Trip sections">{sections.map((value) => <button key={value} className={section === value ? 'active' : ''} onClick={() => openSection(value)} aria-current={section === value ? 'page' : undefined}>{sectionLabels[value]}</button>)}</nav>
+      <section className={section === 'overview' ? 'content' : 'content on-cream'}>{section === 'overview' && <Overview detail={detail} onToggle={toggleChecklist} onAddChecklist={addChecklist} onRemoveChecklist={removeChecklist} onViewChange={openSection} onSelectPlan={(plan) => setSheet({ kind: 'planDetail', plan })} />}{section === 'plans' && <Plans detail={detail} onAdd={() => setSheet({ kind: 'plan' })} onSelectPlan={(plan) => setSheet({ kind: 'planDetail', plan })} />}{section === 'calendar' && <CalendarView plans={detail.plans} />}{section === 'imports' && <Imports tripID={activeTripID} notify={notify} />}{section === 'routes' && <RouteOptions options={detail.routeOptions} onAdd={() => setSheet({ kind: 'route' })} onEdit={(option) => setSheet({ kind: 'route', option })} onDelete={removeRouteOption} />}{section === 'documents' && <Documents detail={detail} onReload={() => loadDetail(activeTripID)} onDelete={removeDocument} notify={notify} />}{section === 'members' && <Members detail={detail} tripID={activeTripID} onReload={() => loadDetail(activeTripID)} onRemove={removeMember} notify={notify} />}</section>
+      <button className="fab" onClick={() => setSheet({ kind: section === 'routes' ? 'route' : 'plan' })} aria-label={section === 'routes' ? 'Add a route option' : 'Add a plan'}><Plus size={25} /></button>
     </>}
-    <nav className="bottom-nav"><button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}><Globe2 size={22} /><span>Trip</span></button><button className={view === 'plans' ? 'active' : ''} onClick={() => setView('plans')}><CalendarDays size={22} /><span>Plans</span></button><button className={view === 'inbox' ? 'active' : ''} onClick={() => setView('inbox')}><PackageCheck size={22} /><span>Inbox</span></button><button className={view === 'routes' ? 'active' : ''} onClick={() => setView('routes')}><Route size={22} /><span>Routes</span></button><button className={view === 'documents' ? 'active' : ''} onClick={() => setView('documents')}><FileText size={22} /><span>Documents</span></button></nav>
+    <nav className="bottom-nav" aria-label="Areas"><button className={route.name === 'trip' || route.name === 'home' ? 'active' : ''} onClick={() => activeTripID ? openSection('overview') : trips[0] && openTrip(trips[0].id)}><Globe2 size={22} /><span>Trip</span></button><button className={route.name === 'search' ? 'active' : ''} onClick={() => navigate({ name: 'search' })}><Search size={22} /><span>Search</span></button><button className={route.name === 'inbox' ? 'active' : ''} onClick={() => navigate({ name: 'inbox' })}><PackageCheck size={22} /><span>Inbox</span></button></nav>
     {sheet?.kind === 'trip' && <TripFormSheet onClose={() => setSheet(null)} onSubmit={createTrip} />}
     {sheet?.kind === 'tripSettings' && detail && <TripFormSheet trip={detail.trip} onClose={() => setSheet(null)} onSubmit={saveTrip} onDelete={() => removeTrip(detail.trip)} />}
     {sheet?.kind === 'plan' && <PlanFormSheet plan={sheet.plan} onClose={() => setSheet(null)} onSubmit={savePlan} />}
     {sheet?.kind === 'planDetail' && <PlanDetailSheet plan={sheet.plan} onClose={() => setSheet(null)} onEdit={() => setSheet({ kind: 'plan', plan: sheet.plan })} onDelete={() => removePlan(sheet.plan)} />}
     {sheet?.kind === 'route' && <RouteFormSheet option={sheet.option} onClose={() => setSheet(null)} onSubmit={saveRouteOption} />}
+    {sheet?.kind === 'switcher' && <TripSwitcherSheet trips={trips} activeTripID={activeTripID} onClose={() => setSheet(null)} onSelect={(tripId) => { setSheet(null); openTrip(tripId) }} onCreate={() => setSheet({ kind: 'trip' })} />}
     {sheet?.kind === 'confirm' && <ConfirmSheet title={sheet.title} body={sheet.body} confirmLabel={sheet.confirmLabel} onConfirm={sheet.run} onClose={() => setSheet(null)} />}
     {toast && <div className="toast"><Check size={16} /> <span>{toast.message}</span>{toast.undo && <button onClick={runUndo}>Undo</button>}</div>}
   </main>
@@ -230,7 +254,7 @@ function TripListState({ error, onRetry }: { error: string; onRetry: () => void 
   return <section className="empty-trips"><span className="brand-mark">W</span><p className="eyebrow">YOUR TRAVEL SPACE</p><h1>We couldn’t load your trips.</h1><p>{error}</p><button className="save-button" onClick={onRetry}>Try again</button></section>
 }
 
-function Overview({ detail, onToggle, onAddChecklist, onRemoveChecklist, onViewChange, onSelectPlan }: { detail: TripDetail; onToggle: (item: ChecklistItem) => void; onAddChecklist: (title: string) => Promise<void>; onRemoveChecklist: (item: ChecklistItem) => void; onViewChange: (view: View) => void; onSelectPlan: (plan: Plan) => void }) {
+function Overview({ detail, onToggle, onAddChecklist, onRemoveChecklist, onViewChange, onSelectPlan }: { detail: TripDetail; onToggle: (item: ChecklistItem) => void; onAddChecklist: (title: string) => Promise<void>; onRemoveChecklist: (item: ChecklistItem) => void; onViewChange: (view: Section) => void; onSelectPlan: (plan: Plan) => void }) {
   const next = detail.plans.find((plan) => new Date(plan.startsAt) >= new Date()) || detail.plans[0]
   return <>{next ? <section className="hero-card"><div className="hero-card-top"><span className="live-pill"><i /> NEXT PLAN</span><span>{formatDay(next.startsAt)}</span></div><div className="hero-time"><strong>{next.title}</strong><span>{formatTime(next.startsAt)}</span></div><div className="hero-detail"><span className={`timeline-dot ${kinds[next.kind].color}`}>{iconFor(next.kind, 18)}</span><div><b>{kinds[next.kind].label}</b><small>{next.location || 'Location to be added'}</small></div></div><div className="airline-row"><span>{next.confirmationCode ? `Confirmation · ${next.confirmationCode}` : 'No confirmation code added'}</span><button onClick={() => onViewChange('plans')}>All plans <ChevronDown size={14} /></button></div></section> : <section className="empty-card"><CalendarDays size={25} /><b>No plans yet</b><p>Start with the thing you cannot afford to miss.</p><button onClick={() => onViewChange('plans')}>Open plans</button></section>}
   <section className="quick-actions"><button onClick={() => onViewChange('documents')}><span className="quick-icon coral"><FolderOpen size={20} /></span>Documents</button><button onClick={() => onViewChange('plans')}><span className="quick-icon sea"><CalendarDays size={20} /></span>Itinerary</button><button onClick={() => onViewChange('members')}><span className="quick-icon sun"><UsersRound size={20} /></span>Travel mates</button><button onClick={() => onViewChange('plans')}><span className="quick-icon lilac"><MapPin size={20} /></span>Places</button></section>
@@ -251,9 +275,43 @@ function Checklist({ checklist, onToggle, onAdd, onRemove }: { checklist: Checkl
   return <section className="readiness-card"><div className="readiness-head"><div><p className="eyebrow">TRIP READINESS</p><h2>Before you go</h2></div><span>{complete} of {checklist.length}</span></div><div className="progress"><i style={{ width: `${checklist.length ? complete / checklist.length * 100 : 0}%` }} /></div><div className="checklist-list">{checklist.map((item) => <div className="checklist-row" key={item.id}><button onClick={() => onToggle(item)} className={item.isComplete ? 'checked' : ''}><span>{item.isComplete && <Check size={13} />}</span>{item.title}</button><button className="row-delete" onClick={() => onRemove(item)} aria-label={`Remove ${item.title}`}><Trash2 size={14} /></button></div>)}</div><form className="inline-form" onSubmit={submit}><input value={newItem} onChange={(event) => setNewItem(event.target.value)} placeholder="Add a reminder" /><button type="submit" disabled={!newItem.trim() || saving} aria-label="Add checklist item"><Plus size={16} /></button></form></section>
 }
 
-function Plans({ detail, onAdd, onSelectPlan }: { detail: TripDetail; onAdd: () => void; onSelectPlan: (plan: Plan) => void }) { return <><section className="plans-title"><div><p className="eyebrow">YOUR SCHEDULE</p><h2>{detail.trip.title}</h2></div><button className="round-add" onClick={onAdd} aria-label="Add a plan"><Plus size={19} /></button></section>{detail.plans.length ? <Timeline plans={detail.plans} onSelect={onSelectPlan} /> : <EmptyPanel icon={<CalendarDays />} title="No plans yet" description="Add your transport, stays, bookings, and things you want to do." />}</> }
+function Plans({ detail, onAdd, onSelectPlan }: { detail: TripDetail; onAdd: () => void; onSelectPlan: (plan: Plan) => void }) {
+  const days = groupByDay(detail.plans)
+  const [activeDay, setActiveDay] = useState('')
+  // An empty selection means "all days"; a day that loses its last plan falls back to that.
+  const selected = days.some((day) => day.key === activeDay) ? activeDay : ''
+  const shown = selected ? days.filter((day) => day.key === selected) : days
+  return <><section className="plans-title"><div><p className="eyebrow">YOUR SCHEDULE</p><h2>{detail.trip.title}</h2></div><button className="round-add" onClick={onAdd} aria-label="Add a plan"><Plus size={19} /></button></section>
+    {days.length > 1 && <div className="day-strip" role="group" aria-label="Filter by day">
+      <button className={selected === '' ? 'active' : ''} onClick={() => setActiveDay('')}><small>ALL</small><b>{detail.plans.length}</b></button>
+      {days.map((day) => <button key={day.key} className={selected === day.key ? 'active' : ''} onClick={() => setActiveDay(day.key)} aria-pressed={selected === day.key}><small>{weekday(day.key)}</small><b>{new Date(day.key).getDate()}</b></button>)}
+    </div>}
+    {detail.plans.length ? shown.map((day) => <section className="day-group" key={day.key}><p className="group-label">{formatWeekday(day.key)}</p><Timeline plans={day.plans} onSelect={onSelectPlan} /></section>)
+      : <EmptyPanel icon={<CalendarDays />} title="No plans yet" description="Add your transport, stays, bookings, and things you want to do." />}</>
+}
 
-const routeLabels: Record<RouteOptionType, string> = { direct_flight: 'Direct flight', flight_train: 'Flight + train', train: 'Train', bus: 'Bus', other: 'Other' }
+function SearchView({ detail, onSelectPlan, onOpenSection }: { detail: TripDetail | null; onSelectPlan: (plan: Plan) => void; onOpenSection: (section: Section) => void }) {
+  const [query, setQuery] = useState('')
+  const term = query.trim().toLowerCase()
+  const matches = (...fields: (string | undefined)[]) => fields.some((field) => field?.toLowerCase().includes(term))
+  const plans = term && detail ? detail.plans.filter((plan) => matches(plan.title, plan.location, plan.confirmationCode, plan.notes)) : []
+  const documents = term && detail ? detail.documents.filter((doc) => matches(doc.name)) : []
+  const options = term && detail ? detail.routeOptions.filter((option) => matches(option.title, option.origin, option.destination, option.notes)) : []
+  const total = plans.length + documents.length + options.length
+  return <><section className="plans-title"><div><p className="eyebrow">{detail ? detail.trip.title.toUpperCase() : 'NO TRIP SELECTED'}</p><h2>Search this trip</h2></div><Search className="shield" size={25} /></section>
+    <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Plans, documents, route options…" aria-label="Search this trip" autoFocus />{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={15} /></button>}</label>
+    {!detail ? <EmptyPanel icon={<Globe2 />} title="Pick a trip first" description="Search looks inside the trip you have open." />
+      : !term ? <EmptyPanel icon={<Search />} title="Search this trip" description="Find a plan, a stored document, or a route option by name, place, or confirmation code." />
+      : !total ? <EmptyPanel icon={<Search />} title={`Nothing matches “${query.trim()}”`} description="Try a place, a confirmation code, or part of a title." />
+      : <>
+        {plans.length > 0 && <><p className="group-label">PLANS · {plans.length}</p><Timeline plans={plans} onSelect={onSelectPlan} /></>}
+        {options.length > 0 && <><p className="group-label">ROUTE OPTIONS · {options.length}</p><section className="import-list">{options.map((option) => <button key={option.id} onClick={() => onOpenSection('routes')}><span className="doc-icon sea"><Route size={18} /></span><span><b>{option.title}</b><small>{option.origin || 'Origin'} → {option.destination || 'Destination'}</small></span><em>{routeStatusLabels[option.status]}</em></button>)}</section></>}
+        {documents.length > 0 && <><p className="group-label">DOCUMENTS · {documents.length}</p><section className="import-list">{documents.map((doc) => <button key={doc.id} onClick={() => onOpenSection('documents')}><span className="doc-icon blue"><FileText size={18} /></span><span><b>{doc.name}</b><small>{formatBytes(doc.sizeBytes)} · {formatDay(doc.createdAt)}</small></span><em>Open</em></button>)}</section></>}
+      </>}
+  </>
+}
+
+const routeLabels: Record<RouteOptionType, string> ={ direct_flight: 'Direct flight', flight_train: 'Flight + train', train: 'Train', bus: 'Bus', other: 'Other' }
 const routeStatusLabels: Record<RouteOptionStatus, string> = { considering: 'Considering', shortlisted: 'Shortlisted', booked: 'Booked', dismissed: 'Dismissed' }
 
 function RouteOptions({ options, onAdd, onEdit, onDelete }: { options: RouteOption[]; onAdd: () => void; onEdit: (option: RouteOption) => void; onDelete: (option: RouteOption) => void }) {
@@ -264,7 +322,7 @@ function RouteOptions({ options, onAdd, onEdit, onDelete }: { options: RouteOpti
   return <><section className="plans-title"><div><p className="eyebrow">YOUR RESEARCH</p><h2>Route options</h2></div><button className="round-add" onClick={onAdd} aria-label="Add route option"><Plus size={19} /></button></section><p className="route-intro">Save the routes you find, then compare trade-offs before booking. Nothing is searched or booked here.</p>{options.length ? <><section className="route-insights">{cheapest && <div><span>LOWEST PRICE</span><b>{formatPrice(cheapest)}</b><small>{cheapest.title}</small></div>}{fastest && <div><span>FASTEST</span><b>{formatDuration(fastest.durationMinutes)}</b><small>{fastest.title}</small></div>}</section><section className="route-list">{options.map((option) => <article className={`route-card ${option.status}`} key={option.id}><div className="route-card-head"><span className="route-type"><Route size={15} /> {routeLabels[option.routeType]}</span><span className={`route-status ${option.status}`}>{routeStatusLabels[option.status]}</span></div><h3>{option.title}</h3>{option.origin || option.destination ? <p className="route-place"><MapPin size={13} /> {option.origin || 'Origin'} <i /> {option.destination || 'Destination'}</p> : null}<div className="route-metrics"><span>{option.priceAmount !== undefined ? formatPrice(option) : 'Price unknown'}<small>price</small></span><span>{formatDuration(option.durationMinutes)}<small>duration</small></span><span>{option.transfers === 0 ? 'Direct' : `${option.transfers} transfer${option.transfers === 1 ? '' : 's'}`}<small>changes</small></span></div>{option.notes && <p className="route-notes">{option.notes}</p>}<div className="route-card-foot">{option.bookingUrl ? <a href={option.bookingUrl} target="_blank" rel="noreferrer">Open saved link</a> : <span />}<div className="row-actions"><button onClick={() => onEdit(option)} aria-label={`Edit ${option.title}`}><Pencil size={14} /></button><button className="danger" onClick={() => onDelete(option)} aria-label={`Delete ${option.title}`}><Trash2 size={14} /></button></div></div></article>)}</section></> : <EmptyPanel icon={<Route />} title="No routes compared yet" description="Add the options you find: direct flight, flight plus train, train-only, or anything else." />}</>
 }
 
-function Inbox({ trips, notify }: { trips: Trip[]; notify: (message: string) => void }) {
+function Inbox({ trips, onOpenTrip, notify }: { trips: Trip[]; onOpenTrip: (tripId: string) => void; notify: (message: string) => void }) {
   const [items, setItems] = useState<ReservationImport[]>([])
   const [selected, setSelected] = useState<ImportDetail | null>(null)
   const [error, setError] = useState('')
@@ -273,7 +331,13 @@ function Inbox({ trips, notify }: { trips: Trip[]; notify: (message: string) => 
   async function open(id: string) { try { setSelected(await api.getImport(id)) } catch (err) { setError(message(err)) } }
   async function assign(tripID: string) { if (!selected) return; try { await api.assignImport(selected.import.id, tripID); setSelected(await api.getImport(selected.import.id)); await refresh(); notify('Pending task assigned to trip') } catch (err) { setError(message(err)) } }
   async function retry() { if (!selected) return; try { await api.retryImport(selected.import.id); setSelected(await api.getImport(selected.import.id)); await refresh(); notify('Extraction queued for retry') } catch (err) { setError(message(err)) } }
-  return <><section className="plans-title"><div><p className="eyebrow">FORWARD & REVIEW</p><h2>Incoming tasks</h2></div><PackageCheck className="shield" size={25} /></section><p className="route-intro">Forward a confirmation to your central inbox. Review and assign it before it changes any trip.</p>{error && <p className="form-error">{error}</p>}{selected ? <section className="import-detail"><button className="text-button" onClick={() => setSelected(null)}>‹ All tasks</button><p className="eyebrow">{selected.import.sender}</p><h2>{selected.import.subject || 'Forwarded reservation'}</h2><p className="import-status">{selected.import.status}{selected.import.usedLlm ? ' · assisted extraction' : ''}{selected.import.duplicateOfImportId ? ' · possible duplicate' : ''}</p>{selected.import.status === 'failed' && <button className="text-button" onClick={retry}>Retry extraction</button>}{selected.import.duplicateOfImportId && <p className="route-intro">This looks similar to an earlier booking. Compare both before approving.</p>}<label className="form-label">ASSIGN TO A TRIP<select defaultValue={selected.import.tripId || ''} onChange={(event) => event.target.value && assign(event.target.value)}><option value="">Choose a trip…</option>{trips.map((trip) => <option key={trip.id} value={trip.id}>{trip.title} · {trip.destination}</option>)}</select></label>{selected.drafts.map((draft) => <article className="import-draft" key={draft.id}><span className={`timeline-dot ${kinds[draft.kind].color}`}>{iconFor(draft.kind, 16)}</span><div><b>{draft.title}</b><small>{draft.supplier || 'Reservation proposal'} · {Math.round(draft.confidence * 100)}% confidence</small><p>{draft.startsAt ? `${formatDay(draft.startsAt)} ${formatTime(draft.startsAt)}` : 'Time needs review'}{draft.location ? ` · ${draft.location}` : ''}</p></div></article>)}</section> : items.length ? <section className="import-list">{items.map((item) => <button key={item.id} onClick={() => open(item.id)}><span className="doc-icon sea"><PackageCheck size={18} /></span><span><b>{item.subject || 'Forwarded reservation'}</b><small>{item.sender} · {formatDay(item.createdAt)}</small></span><em>{item.status}{item.duplicateOfImportId ? ' · duplicate?' : ''}</em></button>)}</section> : <EmptyPanel icon={<PackageCheck />} title="Inbox is clear" description="Forward a booking confirmation to your central address and it will appear here for review." />}</>
+  return <><section className="plans-title"><div><p className="eyebrow">FORWARD & REVIEW</p><h2>Incoming tasks</h2></div><PackageCheck className="shield" size={25} /></section><p className="route-intro">Forward a confirmation to your central inbox. Review and assign it before it changes any trip.</p>{error && <p className="form-error">{error}</p>}{selected ? <section className="import-detail"><button className="text-button" onClick={() => setSelected(null)}>‹ All tasks</button><p className="eyebrow">{selected.import.sender}</p><h2>{selected.import.subject || 'Forwarded reservation'}</h2><p className="import-status">{selected.import.status}{selected.import.usedLlm ? ' · assisted extraction' : ''}{selected.import.duplicateOfImportId ? ' · possible duplicate' : ''}</p>{selected.import.status === 'failed' && <button className="text-button" onClick={retry}>Retry extraction</button>}{selected.import.extractionError && <ExtractionNotice reason={selected.import.extractionError} />}{selected.import.duplicateOfImportId && <p className="route-intro">This looks similar to an earlier booking. Compare both before approving.</p>}{selected.import.tripId && <button className="text-button" onClick={() => onOpenTrip(selected.import.tripId!)}>Open in trip <ChevronDown size={14} /></button>}<label className="form-label">ASSIGN TO A TRIP<select defaultValue={selected.import.tripId || ''} onChange={(event) => event.target.value && assign(event.target.value)}><option value="">Choose a trip…</option>{trips.map((trip) => <option key={trip.id} value={trip.id}>{trip.title} · {trip.destination}</option>)}</select></label>{selected.drafts.map((draft) => <article className="import-draft" key={draft.id}><span className={`timeline-dot ${kinds[draft.kind].color}`}>{iconFor(draft.kind, 16)}</span><div><b>{draft.title}</b><small>{draft.supplier || 'Reservation proposal'} · {Math.round(draft.confidence * 100)}% confidence</small><p>{draft.startsAt ? `${formatDay(draft.startsAt)} ${formatTime(draft.startsAt)}` : 'Time needs review'}{draft.location ? ` · ${draft.location}` : ''}</p></div></article>)}</section> : items.length ? <section className="import-list">{items.map((item) => <button key={item.id} onClick={() => open(item.id)}><span className="doc-icon sea"><PackageCheck size={18} /></span><span><b>{item.subject || 'Forwarded reservation'}</b><small>{item.sender} · {formatDay(item.createdAt)}</small></span><em>{item.status}{item.duplicateOfImportId ? ' · duplicate?' : ''}</em></button>)}</section> : <EmptyPanel icon={<PackageCheck />} title="Inbox is clear" description="Forward a booking confirmation to your central address and it will appear here for review." />}</>
+}
+
+// A fallback draft is a keyword guess, not an extraction. Say so rather than letting
+// a low-confidence draft look like the AI's considered answer.
+function ExtractionNotice({ reason }: { reason: string }) {
+  return <div className="extraction-notice"><TriangleAlert size={16} /><div><b>AI extraction didn’t run</b><p>{reason}</p><p>The draft below is a keyword guess from the subject line. Check every field before approving it.</p></div></div>
 }
 
 function Imports({ tripID, notify }: { tripID: string; notify: (message: string) => void }) {
@@ -310,6 +374,13 @@ function PlanDetailSheet({ plan, onClose, onEdit, onDelete }: { plan: Plan; onCl
     {plan.notes && <div className="detail-block"><FileText size={17} /><div><b>{plan.notes}</b><span>Notes</span></div></div>}
     {!plan.location && !plan.confirmationCode && !plan.notes && !plan.endsAt && <div className="detail-block"><MoreHorizontal size={17} /><div><b>No extra details yet</b><span>Add a location, confirmation code, or notes</span></div></div>}
     <div className="detail-actions"><button onClick={onEdit}><Pencil size={15} /> Edit</button><button className="danger" onClick={onDelete}><Trash2 size={15} /> Delete</button></div>
+  </Sheet>
+}
+
+function TripSwitcherSheet({ trips, activeTripID, onClose, onSelect, onCreate }: { trips: Trip[]; activeTripID: string; onClose: () => void; onSelect: (tripId: string) => void; onCreate: () => void }) {
+  return <Sheet className="picker-sheet" eyebrow="YOUR TRIPS" title="Switch trip" onClose={onClose}>
+    <div className="trip-list">{trips.map((trip) => <button key={trip.id} className={trip.id === activeTripID ? 'selected' : ''} onClick={() => onSelect(trip.id)} aria-current={trip.id === activeTripID ? 'true' : undefined}><span className="trip-swatch" style={{ background: trip.coverColor }} /><span><b>{trip.title}</b><small>{trip.destination} · {formatDateRange(trip.startDate, trip.endDate)}</small></span>{trip.id === activeTripID ? <Check size={17} /> : <span />}</button>)}</div>
+    <button className="create-trip" onClick={onCreate}><Plus size={17} /> Create a trip</button>
   </Sheet>
 }
 
@@ -371,6 +442,14 @@ function toLocalInput(value?:string){if(!value)return '';const date=new Date(val
 function formatDay(value:string){return new Intl.DateTimeFormat(undefined,{day:'numeric',month:'short'}).format(new Date(value))}
 function formatTime(value:string){return new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(value))}
 function formatDateRange(start:string,end:string){return `${formatDay(start)} – ${formatDay(end)}`}
+// Group by the plan's local calendar day, keyed YYYY-MM-DD so the keys sort naturally.
+function groupByDay(plans:Plan[]){
+  const days=new Map<string,Plan[]>()
+  for(const plan of plans){const date=new Date(plan.startsAt);const key=`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;days.set(key,[...(days.get(key)||[]),plan])}
+  return [...days.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([key,dayPlans])=>({key,plans:dayPlans}))
+}
+function weekday(key:string){return new Intl.DateTimeFormat(undefined,{weekday:'short'}).format(new Date(`${key}T12:00:00`)).toUpperCase()}
+function formatWeekday(key:string){return new Intl.DateTimeFormat(undefined,{weekday:'long',day:'numeric',month:'long'}).format(new Date(`${key}T12:00:00`)).toUpperCase()}
 function nights(start:string,end:string){return Math.max(0,Math.round((new Date(end).getTime()-new Date(start).getTime())/86400000))}
 function formatBytes(bytes:number){return bytes<1024*1024?`${Math.ceil(bytes/1024)} KB`:`${(bytes/1024/1024).toFixed(1)} MB`}
 function formatDuration(minutes?:number){if(minutes===undefined)return 'Time unknown';const hours=Math.floor(minutes/60);const remainder=minutes%60;return hours?`${hours}h ${remainder?`${remainder}m`:''}`:`${remainder}m`}

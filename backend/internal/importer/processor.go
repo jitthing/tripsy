@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,6 +25,22 @@ type Processor struct {
 	Resend    *integrations.ResendClient
 	Storage   *integrations.Storage
 	Extractor Extractor
+	Logger    *slog.Logger
+}
+
+func (p *Processor) log() *slog.Logger {
+	if p.Logger == nil {
+		return slog.Default()
+	}
+	return p.Logger
+}
+
+func truncate(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "…"
 }
 
 func (p *Processor) RunOnce(ctx context.Context) error {
@@ -92,10 +109,26 @@ func (p *Processor) process(ctx context.Context, item store.ReservationImport) e
 	if err := p.Storage.Put(ctx, "trip-imports", textPath, "text/plain; charset=utf-8", []byte(text)); err != nil {
 		return err
 	}
+	// A fallback is not the same as an empty email. Record why the extractor did not
+	// produce drafts so a broken key or a rate limit is visible instead of silent.
 	drafts := fallbackDraft(item.Subject, text)
 	usedLLM := false
-	if p.Extractor != nil {
-		if extracted, extractErr := p.Extractor.Extract(ctx, text); extractErr == nil && len(extracted) > 0 {
+	extractionError := ""
+	switch {
+	case p.Extractor == nil:
+		extractionError = "AI extraction is not configured on the server."
+	case strings.TrimSpace(text) == "":
+		extractionError = "No readable text was found in the email or its attachments."
+	default:
+		extracted, extractErr := p.Extractor.Extract(ctx, text)
+		switch {
+		case extractErr != nil:
+			extractionError = truncate(extractErr.Error(), 400)
+			p.log().Error("reservation extraction failed", "importID", item.ID, "error", extractErr)
+		case len(extracted) == 0:
+			extractionError = "The extractor found no reservations in this email."
+			p.log().Warn("reservation extraction returned no drafts", "importID", item.ID)
+		default:
 			drafts = extracted
 			usedLLM = true
 		}
@@ -111,7 +144,7 @@ func (p *Processor) process(ctx context.Context, item store.ReservationImport) e
 			drafts[index].Kind = "other"
 		}
 	}
-	if err := p.Store.CompleteImport(ctx, item.ID, rawPath, textPath, usedLLM, drafts, attachments); err != nil {
+	if err := p.Store.CompleteImport(ctx, item.ID, rawPath, textPath, usedLLM, extractionError, drafts, attachments); err != nil {
 		return err
 	}
 	// Keep suspected duplicates visible so the user can compare them before
@@ -168,12 +201,55 @@ func sanitizeFilename(value string) string {
 
 const openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
 
+const extractionSystemPrompt = `You extract travel reservations from forwarded confirmation emails. You return only structured data; a person reviews every draft before it reaches an itinerary.
+
+SPLITTING
+Emit one draft per travelled segment, not one per email.
+- A return flight booked together is TWO drafts (outbound, inbound).
+- A multi-leg journey with a connection is one draft per leg.
+- A hotel stay is ONE draft covering check-in to check-out, however many nights.
+- Ignore anything that is not a reservation: adverts, loyalty balances, newsletters, receipts for something already past, "manage your booking" prompts. If the email contains no reservation, return an empty drafts array.
+
+TIMES — the most common source of error
+- startsAt and endsAt are absolute instants in RFC 3339 with an explicit UTC offset.
+- Confirmation emails almost always quote LOCAL time at the place concerned. Convert it using that place's offset on that date, accounting for daylight saving. A 08:30 departure from London on 10 September is "2026-09-10T08:30:00+01:00", NOT "...Z".
+- Flights: startsAt is departure from the origin, endsAt is arrival at the destination — each in its OWN local offset. Do not assume a flight lands on its departure date.
+- Hotels: startsAt is check-in, endsAt is check-out, both local to the property.
+- timeZone is the IANA name for where the reservation STARTS, e.g. "Europe/Lisbon". Leave it "" if you cannot determine it — never guess a plausible-sounding zone.
+- If you cannot establish the offset with confidence, still give your best local reading and lower the confidence rather than silently emitting Z.
+- Numeric dates are ambiguous: 03/04/2026 is 3 April for a European sender and 4 March for a US one. Use the airline, currency, language, and address to decide. If it stays ambiguous, lower the confidence and say which reading you took in notes.
+- A date with no year means the next such date after the email was sent.
+
+FIELDS
+- kind: "flight" for air travel; "transport" for train, bus, ferry, and transfers; "stay" for hotels and rentals; "activity" for tours, tickets, restaurants, events; "other" when nothing fits.
+- title: what a traveller would recognise on a timeline, e.g. "BA487 London → Barcelona" or "Hotel Bairro Alto, 3 nights". Not the email's subject line.
+- supplier: the operating company — the airline, hotel, or rail operator.
+- confirmationCode: the booking reference the traveller would quote at the desk (PNR, booking number). Not a ticket number, invoice number, or loyalty ID. Empty string if absent.
+- location: where the traveller physically goes at the start — airport and terminal, or the property address.
+- notes: only what affects the traveller — baggage allowance, gate-closing time, cancellation deadline, seat, an ambiguity you resolved. Never restate the other fields. Empty string if nothing useful.
+
+CONFIDENCE — this number is shown to the user, so it must mean something
+- 0.9–1.0: date, time, offset, and confirmation code all stated explicitly.
+- 0.7–0.9: core details explicit, but you inferred the offset or the year.
+- 0.4–0.7: you resolved a real ambiguity, such as a numeric date or a missing arrival time.
+- 0.1–0.4: the text is fragmentary and much of this is inference.
+Report what the evidence supports. Do not default to a high number.`
+
 // OpenRouterExtractor extracts reservation drafts using the OpenRouter API
 // (OpenAI-compatible chat completions).
 type OpenRouterExtractor struct {
 	APIKey string
 	Model  string
 	Client *http.Client
+	// Endpoint overrides the OpenRouter URL; empty means the real service.
+	Endpoint string
+}
+
+func (e *OpenRouterExtractor) endpoint() string {
+	if e.Endpoint == "" {
+		return openRouterEndpoint
+	}
+	return e.Endpoint
 }
 
 func NewOpenRouterExtractor(apiKey, model string) (*OpenRouterExtractor, error) {
@@ -194,7 +270,8 @@ func (e *OpenRouterExtractor) Extract(ctx context.Context, text string) ([]store
 	payload := openRouterRequest{
 		Model: e.Model,
 		Messages: []openRouterMessage{
-			{Role: "user", Content: "Extract reservation details from the following text. Return every reservation found. Use RFC 3339 timestamps when known; otherwise use null. Use an empty string when a text field is unknown.\n\n" + text},
+			{Role: "system", Content: extractionSystemPrompt},
+			{Role: "user", Content: "Extract every reservation from this forwarded email.\n\n<email>\n" + truncate(text, 24000) + "\n</email>"},
 		},
 		ResponseFormat: &openRouterFormat{
 			Type: "json_schema",
@@ -208,7 +285,7 @@ func (e *OpenRouterExtractor) Extract(ctx context.Context, text string) ([]store
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterEndpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.endpoint(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

@@ -1,10 +1,11 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { Session } from '@supabase/supabase-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   api: {
     listTrips: vi.fn(),
+    listInbox: vi.fn(),
     getTrip: vi.fn(),
     createPlan: vi.fn(),
     updatePlan: vi.fn(),
@@ -41,6 +42,9 @@ const plan = {
 const detail = { trip, plans: [], checklist: [], documents: [], routeOptions: [], members: [] }
 const detailWithPlan = { ...detail, plans: [plan] }
 const session = { user: { email: 'ari@example.com', user_metadata: { full_name: 'Ari' } } } as unknown as Session
+
+// The app reads its route from the URL, so every test starts from a bare path.
+beforeEach(() => { window.history.replaceState({}, '', '/') })
 
 describe('Workspace trip loading', () => {
   beforeEach(() => {
@@ -80,6 +84,102 @@ describe('Workspace trip loading', () => {
     expect(await screen.findByRole('heading', { name: 'We couldn’t load your trips.' })).toBeInTheDocument()
     expect(screen.getAllByText('Unable to load trips')).toHaveLength(2)
     expect(screen.queryByText('Start your first shared trip.')).not.toBeInTheDocument()
+  })
+})
+
+describe('URL routing', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    window.history.replaceState({}, '', '/')
+    mocks.auth.getSession.mockResolvedValue({ data: { session } })
+    mocks.auth.onAuthStateChange.mockReturnValue({ data: { subscription: { unsubscribe: vi.fn() } } })
+    mocks.api.listTrips.mockResolvedValue([trip])
+    mocks.api.getTrip.mockResolvedValue(detailWithPlan)
+  })
+
+  it('sends a bare path to the first trip without stacking history', async () => {
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Lisbon' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/trip/trip-1')
+  })
+
+  it('opens a deep-linked section directly', async () => {
+    window.history.replaceState({}, '', '/trip/trip-1/documents')
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Travel wallet' })).toBeInTheDocument()
+    expect(mocks.api.getTrip).toHaveBeenCalledWith('trip-1')
+  })
+
+  it('puts the section in the URL and restores it on back', async () => {
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Lisbon' })
+
+    const tabs = within(screen.getByRole('navigation', { name: 'Trip sections' }))
+    fireEvent.click(tabs.getByRole('button', { name: 'Documents' }))
+    expect(await screen.findByRole('heading', { name: 'Travel wallet' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/trip/trip-1/documents')
+
+    window.history.back()
+    await waitFor(() => expect(window.location.pathname).toBe('/trip/trip-1'))
+    expect(await screen.findByRole('heading', { name: 'What’s next' })).toBeInTheDocument()
+  })
+
+  it('routes the inbox at its own path', async () => {
+    mocks.api.listInbox.mockResolvedValue([])
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Lisbon' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Inbox' }))
+
+    expect(await screen.findByRole('heading', { name: 'Incoming tasks' })).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/inbox')
+  })
+
+  it('switches trips from the picker sheet and updates the URL', async () => {
+    const other = { ...trip, id: 'trip-2', title: 'Osaka autumn', destination: 'Osaka' }
+    mocks.api.listTrips.mockResolvedValue([trip, other])
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Lisbon' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch trip' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Osaka autumn/ }))
+
+    await waitFor(() => expect(window.location.pathname).toBe('/trip/trip-2'))
+    expect(mocks.api.getTrip).toHaveBeenCalledWith('trip-2')
+  })
+})
+
+describe('Trip search', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    window.history.replaceState({}, '', '/')
+    mocks.auth.getSession.mockResolvedValue({ data: { session } })
+    mocks.auth.onAuthStateChange.mockReturnValue({ data: { subscription: { unsubscribe: vi.fn() } } })
+    mocks.api.listTrips.mockResolvedValue([trip])
+    mocks.api.getTrip.mockResolvedValue(detailWithPlan)
+  })
+
+  it('finds a plan by its confirmation code', async () => {
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Lisbon' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    fireEvent.change(await screen.findByLabelText('Search this trip'), { target: { value: 'xk92' } })
+
+    expect(await screen.findByText('PLANS · 1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Flight to Lisbon/ })).toBeInTheDocument()
+  })
+
+  it('says so when nothing matches', async () => {
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Lisbon' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    fireEvent.change(await screen.findByLabelText('Search this trip'), { target: { value: 'zzzz' } })
+
+    expect(await screen.findByText('Nothing matches “zzzz”')).toBeInTheDocument()
   })
 })
 

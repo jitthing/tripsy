@@ -43,7 +43,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	importProcessor := &importer.Processor{Store: st, Resend: integrations.NewResendClient(env("RESEND_API_KEY", "")), Storage: integrations.NewStorage(supabaseURL, env("SUPABASE_SERVICE_ROLE_KEY", "")), Extractor: extractor}
+	importProcessor := &importer.Processor{Logger: logger, Store: st, Resend: integrations.NewResendClient(env("RESEND_API_KEY", "")), Storage: integrations.NewStorage(supabaseURL, env("SUPABASE_SERVICE_ROLE_KEY", "")), Extractor: extractor}
 	calendarService := calendar.New(calendar.Config{ClientID: env("GOOGLE_CALENDAR_CLIENT_ID", ""), ClientSecret: env("GOOGLE_CALENDAR_CLIENT_SECRET", ""), RedirectURL: env("GOOGLE_CALENDAR_REDIRECT_URL", ""), StateSecret: env("GOOGLE_OAUTH_STATE_SECRET", ""), TokenKey: env("GOOGLE_TOKEN_ENCRYPTION_KEY", "")}, st)
 
 	server := &http.Server{
