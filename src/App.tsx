@@ -5,12 +5,14 @@ import {
   Clock3, LogOut, MapPin, MoreHorizontal, PackageCheck, Pencil, Plane, Plus, Route, Search, Settings2,
   ShieldCheck, Ticket, TrainFront, Trash2, TriangleAlert, Upload, UsersRound, X,
 } from 'lucide-react'
-import { api, type ChecklistItem, type Document, type ImportDetail, type Plan, type PlanInput, type PlanKind, type ReservationImport, type RouteOption, type RouteOptionInput, type RouteOptionStatus, type RouteOptionType, type Trip, type TripDetail, type TripInput } from './lib/api'
+import { api, type ChecklistItem, type Document, type ImportDetail, type Plan, type PlanInput, type PlanKind, type ReservationDraft, type ReservationImport, type RouteOption, type RouteOptionInput, type RouteOptionStatus, type RouteOptionType, type Trip, type TripDetail, type TripInput } from './lib/api'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import { sectionLabels, sections, useRoute, type Section } from './lib/router'
 
+type TripSuggestion = { title: string; destination: string; startDate: string; endDate: string; confidence: number }
+
 type Sheet =
-  | { kind: 'trip' }
+  | { kind: 'trip'; suggestion?: TripSuggestion; importID?: string }
   | { kind: 'tripSettings' }
   | { kind: 'plan'; plan?: Plan }
   | { kind: 'planDetail'; plan: Plan }
@@ -91,7 +93,7 @@ function Workspace({ session }: { session: Session }) {
   function openTrip(tripId: string, next: Section = 'overview', replace = false) { navigate({ name: 'trip', tripId, section: next }, replace) }
   function openSection(next: Section) { if (activeTripID) openTrip(activeTripID, next) }
 
-  async function loadTrips(preferredID?: string) {
+  async function loadTrips() {
     setLoading(true); setTripListFailed(false); setError('')
     try {
       const nextTrips = await api.listTrips(); setTrips(nextTrips)
@@ -113,13 +115,17 @@ function Workspace({ session }: { session: Session }) {
   }, [])
   useEffect(() => { loadDetail(activeTripID) }, [activeTripID])
 
-  async function createTrip(input: TripInput) {
+  // importID is set when the trip was suggested from a forwarded email, so the
+  // email is filed against the trip it just created.
+  async function createTrip(input: TripInput, importID?: string) {
     const trip = await api.createTrip(input)
-    setSheet(null); await loadTrips(trip.id); notify('Trip created')
+    if (importID) await api.assignImport(importID, trip.id)
+    setSheet(null); await loadTrips(); openTrip(trip.id)
+    notify(importID ? 'Trip created and the email filed against it' : 'Trip created')
   }
   async function saveTrip(input: TripInput) {
     if (!activeTripID) return
-    await api.updateTrip(activeTripID, input); setSheet(null); await loadTrips(activeTripID); await loadDetail(activeTripID); notify('Trip updated')
+    await api.updateTrip(activeTripID, input); setSheet(null); await loadTrips(); await loadDetail(activeTripID, true); notify('Trip updated')
   }
   // Apply the change locally first, then reconcile with the server; restore the snapshot if it rejects.
   async function mutate(update: (current: TripDetail) => TripDetail, action: () => Promise<unknown>, done: string, undo?: () => Promise<void>) {
@@ -199,16 +205,16 @@ function Workspace({ session }: { session: Session }) {
   return <main className="app-shell production-shell">
     <header className="topbar"><div className="avatar">{initials(profileName)}</div><button className="trip-picker" onClick={() => setSheet({ kind: 'switcher' })} aria-label="Switch trip"><Globe2 size={15} /><span>{detail?.trip.title || 'Waypoint'}</span><ChevronDown size={15} /></button><div className="topbar-actions">{detail && <button className="icon-button" onClick={() => setSheet({ kind: 'tripSettings' })} aria-label="Trip settings"><Settings2 size={18} /></button>}<button className="icon-button" onClick={() => supabase?.auth.signOut()} aria-label="Sign out"><LogOut size={18} /></button></div></header>
     {error && <div className="error-banner">{error}<button onClick={() => setError('')} aria-label="Dismiss error"><X size={15} /></button></div>}
-    {route.name === 'inbox' ? <section className="area-view"><Inbox trips={trips} onOpenTrip={(tripId) => openTrip(tripId, 'imports')} notify={notify} /></section>
+    {route.name === 'inbox' ? <section className="area-view"><Inbox trips={trips} onOpenTrip={(tripId) => openTrip(tripId, 'imports')} onSuggestTrip={(suggestion, importID) => setSheet({ kind: 'trip', suggestion, importID })} onReload={() => loadDetail(activeTripID, true)} notify={notify} /></section>
       : route.name === 'search' ? <section className="area-view"><SearchView detail={detail} onSelectPlan={(plan) => setSheet({ kind: 'planDetail', plan })} onOpenSection={openSection} /></section>
       : tripListFailed ? <TripListState error={error} onRetry={() => loadTrips()} /> : !activeTripID ? <EmptyTrips onCreate={() => setSheet({ kind: 'trip' })} /> : !detail ? (error ? <TripDetailState error={error} onRetry={() => loadDetail(activeTripID)} /> : <TripSkeleton />) : <>
       <TripHeader trip={detail.trip} checklist={detail.checklist} />
       <nav className="section-tabs" aria-label="Trip sections">{sections.map((value) => <button key={value} className={section === value ? 'active' : ''} onClick={() => openSection(value)} aria-current={section === value ? 'page' : undefined}>{sectionLabels[value]}</button>)}</nav>
-      <section className={section === 'overview' ? 'content' : 'content on-cream'}>{section === 'overview' && <Overview detail={detail} onToggle={toggleChecklist} onAddChecklist={addChecklist} onRemoveChecklist={removeChecklist} onViewChange={openSection} onSelectPlan={(plan) => setSheet({ kind: 'planDetail', plan })} />}{section === 'plans' && <Plans detail={detail} onAdd={() => setSheet({ kind: 'plan' })} onSelectPlan={(plan) => setSheet({ kind: 'planDetail', plan })} />}{section === 'calendar' && <CalendarView plans={detail.plans} />}{section === 'imports' && <Imports tripID={activeTripID} notify={notify} />}{section === 'routes' && <RouteOptions options={detail.routeOptions} onAdd={() => setSheet({ kind: 'route' })} onEdit={(option) => setSheet({ kind: 'route', option })} onDelete={removeRouteOption} />}{section === 'documents' && <Documents detail={detail} onReload={() => loadDetail(activeTripID)} onDelete={removeDocument} notify={notify} />}{section === 'members' && <Members detail={detail} tripID={activeTripID} onReload={() => loadDetail(activeTripID)} onRemove={removeMember} notify={notify} />}</section>
+      <section className={section === 'overview' ? 'content' : 'content on-cream'}>{section === 'overview' && <Overview detail={detail} onToggle={toggleChecklist} onAddChecklist={addChecklist} onRemoveChecklist={removeChecklist} onViewChange={openSection} onSelectPlan={(plan) => setSheet({ kind: 'planDetail', plan })} />}{section === 'plans' && <Plans detail={detail} onAdd={() => setSheet({ kind: 'plan' })} onSelectPlan={(plan) => setSheet({ kind: 'planDetail', plan })} />}{section === 'calendar' && <CalendarView plans={detail.plans} />}{section === 'imports' && <Imports tripID={activeTripID} onReload={() => loadDetail(activeTripID, true)} notify={notify} />}{section === 'routes' && <RouteOptions options={detail.routeOptions} onAdd={() => setSheet({ kind: 'route' })} onEdit={(option) => setSheet({ kind: 'route', option })} onDelete={removeRouteOption} />}{section === 'documents' && <Documents detail={detail} onReload={() => loadDetail(activeTripID)} onDelete={removeDocument} notify={notify} />}{section === 'members' && <Members detail={detail} tripID={activeTripID} onReload={() => loadDetail(activeTripID)} onRemove={removeMember} notify={notify} />}</section>
       <button className="fab" onClick={() => setSheet({ kind: section === 'routes' ? 'route' : 'plan' })} aria-label={section === 'routes' ? 'Add a route option' : 'Add a plan'}><Plus size={25} /></button>
     </>}
     <nav className="bottom-nav" aria-label="Areas"><button className={route.name === 'trip' || route.name === 'home' ? 'active' : ''} onClick={() => activeTripID ? openSection('overview') : trips[0] && openTrip(trips[0].id)}><Globe2 size={22} /><span>Trip</span></button><button className={route.name === 'search' ? 'active' : ''} onClick={() => navigate({ name: 'search' })}><Search size={22} /><span>Search</span></button><button className={route.name === 'inbox' ? 'active' : ''} onClick={() => navigate({ name: 'inbox' })}><PackageCheck size={22} /><span>Inbox</span></button></nav>
-    {sheet?.kind === 'trip' && <TripFormSheet onClose={() => setSheet(null)} onSubmit={createTrip} />}
+    {sheet?.kind === 'trip' && <TripFormSheet suggestion={sheet.suggestion} onClose={() => setSheet(null)} onSubmit={(input) => createTrip(input, sheet.importID)} />}
     {sheet?.kind === 'tripSettings' && detail && <TripFormSheet trip={detail.trip} onClose={() => setSheet(null)} onSubmit={saveTrip} onDelete={() => removeTrip(detail.trip)} />}
     {sheet?.kind === 'plan' && <PlanFormSheet plan={sheet.plan} onClose={() => setSheet(null)} onSubmit={savePlan} />}
     {sheet?.kind === 'planDetail' && <PlanDetailSheet plan={sheet.plan} onClose={() => setSheet(null)} onEdit={() => setSheet({ kind: 'plan', plan: sheet.plan })} onDelete={() => removePlan(sheet.plan)} />}
@@ -322,7 +328,7 @@ function RouteOptions({ options, onAdd, onEdit, onDelete }: { options: RouteOpti
   return <><section className="plans-title"><div><p className="eyebrow">YOUR RESEARCH</p><h2>Route options</h2></div><button className="round-add" onClick={onAdd} aria-label="Add route option"><Plus size={19} /></button></section><p className="route-intro">Save the routes you find, then compare trade-offs before booking. Nothing is searched or booked here.</p>{options.length ? <><section className="route-insights">{cheapest && <div><span>LOWEST PRICE</span><b>{formatPrice(cheapest)}</b><small>{cheapest.title}</small></div>}{fastest && <div><span>FASTEST</span><b>{formatDuration(fastest.durationMinutes)}</b><small>{fastest.title}</small></div>}</section><section className="route-list">{options.map((option) => <article className={`route-card ${option.status}`} key={option.id}><div className="route-card-head"><span className="route-type"><Route size={15} /> {routeLabels[option.routeType]}</span><span className={`route-status ${option.status}`}>{routeStatusLabels[option.status]}</span></div><h3>{option.title}</h3>{option.origin || option.destination ? <p className="route-place"><MapPin size={13} /> {option.origin || 'Origin'} <i /> {option.destination || 'Destination'}</p> : null}<div className="route-metrics"><span>{option.priceAmount !== undefined ? formatPrice(option) : 'Price unknown'}<small>price</small></span><span>{formatDuration(option.durationMinutes)}<small>duration</small></span><span>{option.transfers === 0 ? 'Direct' : `${option.transfers} transfer${option.transfers === 1 ? '' : 's'}`}<small>changes</small></span></div>{option.notes && <p className="route-notes">{option.notes}</p>}<div className="route-card-foot">{option.bookingUrl ? <a href={option.bookingUrl} target="_blank" rel="noreferrer">Open saved link</a> : <span />}<div className="row-actions"><button onClick={() => onEdit(option)} aria-label={`Edit ${option.title}`}><Pencil size={14} /></button><button className="danger" onClick={() => onDelete(option)} aria-label={`Delete ${option.title}`}><Trash2 size={14} /></button></div></div></article>)}</section></> : <EmptyPanel icon={<Route />} title="No routes compared yet" description="Add the options you find: direct flight, flight plus train, train-only, or anything else." />}</>
 }
 
-function Inbox({ trips, onOpenTrip, notify }: { trips: Trip[]; onOpenTrip: (tripId: string) => void; notify: (message: string) => void }) {
+function Inbox({ trips, onOpenTrip, onSuggestTrip, onReload, notify }: { trips: Trip[]; onOpenTrip: (tripId: string) => void; onSuggestTrip: (suggestion: TripSuggestion, importID: string) => void; onReload: () => Promise<void>; notify: (message: string) => void }) {
   const [items, setItems] = useState<ReservationImport[]>([])
   const [selected, setSelected] = useState<ImportDetail | null>(null)
   const [address, setAddress] = useState('')
@@ -334,7 +340,26 @@ function Inbox({ trips, onOpenTrip, notify }: { trips: Trip[]; onOpenTrip: (trip
   async function open(id: string) { try { setSelected(await api.getImport(id)) } catch (err) { setError(message(err)) } }
   async function assign(tripID: string) { if (!selected) return; try { await api.assignImport(selected.import.id, tripID); setSelected(await api.getImport(selected.import.id)); await refresh(); notify('Pending task assigned to trip') } catch (err) { setError(message(err)) } }
   async function retry() { if (!selected) return; try { await api.retryImport(selected.import.id); setSelected(await api.getImport(selected.import.id)); await refresh(); notify('Extraction queued for retry') } catch (err) { setError(message(err)) } }
-  return <><section className="plans-title"><div><p className="eyebrow">FORWARD & REVIEW</p><h2>Incoming tasks</h2></div><PackageCheck className="shield" size={25} /></section><p className="route-intro">Forward a confirmation to your own address below. Review and assign it before it changes any trip.</p>{address && <button className="forwarding-address" onClick={() => { navigator.clipboard?.writeText(address); notify('Forwarding address copied') }}><span>YOUR FORWARDING ADDRESS</span><b>{address}</b><small>Tap to copy · only you receive mail sent here</small></button>}{error && <p className="form-error">{error}</p>}{selected ? <section className="import-detail"><button className="text-button" onClick={() => setSelected(null)}>‹ All tasks</button><p className="eyebrow">{selected.import.sender}</p><h2>{selected.import.subject || 'Forwarded reservation'}</h2><p className="import-status">{selected.import.status}{selected.import.usedLlm ? ' · assisted extraction' : ''}{selected.import.duplicateOfImportId ? ' · possible duplicate' : ''}</p>{selected.import.status === 'failed' && <button className="text-button" onClick={retry}>Retry extraction</button>}{selected.import.extractionError && <ExtractionNotice reason={selected.import.extractionError} />}{selected.import.duplicateOfImportId && <p className="route-intro">This looks similar to an earlier booking. Compare both before approving.</p>}{selected.import.tripId && <button className="text-button" onClick={() => onOpenTrip(selected.import.tripId!)}>Open in trip <ChevronDown size={14} /></button>}<label className="form-label">ASSIGN TO A TRIP<select defaultValue={selected.import.tripId || ''} onChange={(event) => event.target.value && assign(event.target.value)}><option value="">Choose a trip…</option>{trips.map((trip) => <option key={trip.id} value={trip.id}>{trip.title} · {trip.destination}</option>)}</select></label>{selected.drafts.map((draft) => <article className="import-draft" key={draft.id}><span className={`timeline-dot ${kinds[draft.kind].color}`}>{iconFor(draft.kind, 16)}</span><div><b>{draft.title}</b><small>{draft.supplier || 'Reservation proposal'} · {Math.round(draft.confidence * 100)}% confidence</small><p>{draft.startsAt ? `${formatDay(draft.startsAt)} ${formatTime(draft.startsAt)}` : 'Time needs review'}{draft.location ? ` · ${draft.location}` : ''}</p></div></article>)}</section> : items.length ? <section className="import-list">{items.map((item) => <button key={item.id} onClick={() => open(item.id)}><span className="doc-icon sea"><PackageCheck size={18} /></span><span><b>{item.subject || 'Forwarded reservation'}</b><small>{item.sender} · {formatDay(item.createdAt)}</small></span><em>{item.status}{item.duplicateOfImportId ? ' · duplicate?' : ''}</em></button>)}</section> : <EmptyPanel icon={<PackageCheck />} title="Inbox is clear" description="Forward a booking confirmation to your central address and it will appear here for review." />}</>
+  async function approve(draft: ReservationDraft) {
+    if (!selected || !draft.startsAt) { setError('This draft has no start time. Open it in the trip to add one before approving.'); return }
+    try { await api.approveDraft(selected.import.id, draft); setSelected(await api.getImport(selected.import.id)); await refresh(); await onReload(); notify('Reservation added to your itinerary') } catch (err) { setError(message(err)) }
+  }
+  async function discard(draft: ReservationDraft) {
+    if (!selected) return
+    try { await api.discardDraft(selected.import.id, draft.id); setSelected(await api.getImport(selected.import.id)); await refresh(); notify('Draft discarded') } catch (err) { setError(message(err)) }
+  }
+  const suggestion = selected && !selected.import.tripId ? deriveTripSuggestion(selected.drafts) : null
+  return <><section className="plans-title"><div><p className="eyebrow">FORWARD & REVIEW</p><h2>Incoming tasks</h2></div><PackageCheck className="shield" size={25} /></section><p className="route-intro">Forward a confirmation to your own address below. Review and assign it before it changes any trip.</p>{address && <button className="forwarding-address" onClick={() => { navigator.clipboard?.writeText(address); notify('Forwarding address copied') }}><span>YOUR FORWARDING ADDRESS</span><b>{address}</b><small>Tap to copy · only you receive mail sent here</small></button>}{error && <p className="form-error">{error}</p>}{selected ? <section className="import-detail"><button className="text-button" onClick={() => setSelected(null)}>‹ All tasks</button><p className="eyebrow">{selected.import.sender}</p><h2>{selected.import.subject || 'Forwarded reservation'}</h2><p className="import-status">{selected.import.status}{selected.import.usedLlm ? ' · assisted extraction' : ''}{selected.import.duplicateOfImportId ? ' · possible duplicate' : ''}</p>{selected.import.status === 'failed' && <button className="text-button" onClick={retry}>Retry extraction</button>}{selected.import.extractionError && <ExtractionNotice reason={selected.import.extractionError} />}{selected.import.duplicateOfImportId && <p className="route-intro">This looks similar to an earlier booking. Compare both before approving.</p>}{selected.import.tripId && <button className="text-button" onClick={() => onOpenTrip(selected.import.tripId!)}>Open in trip <ChevronDown size={14} /></button>}<label className="form-label">ASSIGN TO A TRIP<select value={selected.import.tripId || ''} onChange={(event) => event.target.value && assign(event.target.value)}><option value="">Choose a trip…</option>{trips.map((trip) => <option key={trip.id} value={trip.id}>{trip.title} · {trip.destination}</option>)}</select></label>{suggestion && <SuggestedTrip suggestion={suggestion} onCreate={() => onSuggestTrip(suggestion, selected.import.id)} />}{selected.drafts.map((draft) => <article className="import-draft" key={draft.id}><span className={`timeline-dot ${kinds[draft.kind].color}`}>{iconFor(draft.kind, 16)}</span><div><b>{draft.title}</b><small>{draft.supplier || 'Reservation proposal'} · {Math.round(draft.confidence * 100)}% confidence</small><p>{draft.startsAt ? `${formatDay(draft.startsAt)} ${formatTime(draft.startsAt)}` : 'Time needs review'}{draft.location ? ` · ${draft.location}` : ''}</p></div>{draft.status === 'pending' && (selected.import.tripId ? <aside><button onClick={() => approve(draft)} disabled={!draft.startsAt}>Approve</button><button onClick={() => discard(draft)}>Discard</button></aside> : <aside><small className="needs-trip">Assign a trip to approve</small></aside>)}</article>)}</section> : items.length ? <section className="import-list">{items.map((item) => <button key={item.id} onClick={() => open(item.id)}><span className="doc-icon sea"><PackageCheck size={18} /></span><span><b>{item.subject || 'Forwarded reservation'}</b><small>{item.sender} · {formatDay(item.createdAt)}</small></span><em>{item.status}{item.duplicateOfImportId ? ' · duplicate?' : ''}</em></button>)}</section> : <EmptyPanel icon={<PackageCheck />} title="Inbox is clear" description="Forward a booking confirmation to your central address and it will appear here for review." />}</>
+}
+
+function SuggestedTrip({ suggestion, onCreate }: { suggestion: TripSuggestion; onCreate: () => void }) {
+  const shaky = suggestion.confidence < 0.5
+  return <div className="suggested-trip">
+    <div><p className="eyebrow">NO MATCHING TRIP</p><b>{suggestion.destination}</b><small>{formatDateRange(suggestion.startDate, suggestion.endDate)}</small>
+      {shaky && <p className="suggested-warning"><TriangleAlert size={13} /> Extracted with low confidence ({Math.round(suggestion.confidence * 100)}%) — check the dates carefully.</p>}
+    </div>
+    <button onClick={onCreate}><Plus size={14} /> Create trip</button>
+  </div>
 }
 
 // A fallback draft is a keyword guess, not an extraction. Say so rather than letting
@@ -343,13 +368,13 @@ function ExtractionNotice({ reason }: { reason: string }) {
   return <div className="extraction-notice"><TriangleAlert size={16} /><div><b>AI extraction didn’t run</b><p>{reason}</p><p>The draft below is a keyword guess from the subject line. Check every field before approving it.</p></div></div>
 }
 
-function Imports({ tripID, notify }: { tripID: string; notify: (message: string) => void }) {
+function Imports({ tripID, onReload, notify }: { tripID: string; onReload: () => Promise<void>; notify: (message: string) => void }) {
   const [items,setItems]=useState<ReservationImport[]>([]);const [address,setAddress]=useState('');const [selected,setSelected]=useState<ImportDetail | null>(null);const [error,setError]=useState('')
   async function refresh(){try{setItems(await api.listImports(tripID))}catch(err){setError(message(err))}}
   useEffect(()=>{setSelected(null);setAddress('');refresh()},[tripID])
   async function forwardingAddress(){try{const result=await api.getImportAddress(tripID);setAddress(result.address);await navigator.clipboard?.writeText(result.address);notify('Forwarding address copied')}catch(err){setError(message(err))}}
   async function open(id:string){try{setSelected(await api.getImport(id))}catch(err){setError(message(err))}}
-  async function approve(draft:ImportDetail['drafts'][number]){if(!selected||!draft.startsAt){setError('Add a start time in the plan form before approving this draft.');return};try{await api.approveDraft(selected.import.id,draft);await refresh();setSelected(await api.getImport(selected.import.id));notify('Reservation added to your itinerary')}catch(err){setError(message(err))}}
+  async function approve(draft:ImportDetail['drafts'][number]){if(!selected||!draft.startsAt){setError('Add a start time in the plan form before approving this draft.');return};try{await api.approveDraft(selected.import.id,draft);await refresh();setSelected(await api.getImport(selected.import.id));await onReload();notify('Reservation added to your itinerary')}catch(err){setError(message(err))}}
   async function discard(draft:ImportDetail['drafts'][number]){if(!selected)return;try{await api.discardDraft(selected.import.id,draft.id);setSelected(await api.getImport(selected.import.id));await refresh();notify('Draft discarded')}catch(err){setError(message(err))}}
   return <><section className="plans-title"><div><p className="eyebrow">FORWARD & REVIEW</p><h2>Reservation imports</h2></div><button className="round-add" onClick={forwardingAddress} aria-label="Get forwarding address"><Plus size={19}/></button></section><p className="route-intro">Forward booking emails here. Waypoint creates a private draft; nothing reaches the itinerary until you approve it.</p>{address&&<button className="forwarding-address" onClick={()=>navigator.clipboard?.writeText(address)}><span>FORWARD TO THIS TRIP</span><b>{address}</b><small>Tap to copy</small></button>}{error&&<p className="form-error">{error}</p>}{selected?<section className="import-detail"><button className="text-button" onClick={()=>setSelected(null)}>‹ All imports</button><p className="eyebrow">{selected.import.sender}</p><h2>{selected.import.subject}</h2><p className="import-status">{selected.import.status}{selected.import.usedLlm?' · assisted extraction':''}</p>{selected.drafts.map((draft)=><article className="import-draft" key={draft.id}><span className={`timeline-dot ${kinds[draft.kind].color}`}>{iconFor(draft.kind,16)}</span><div><b>{draft.title}</b><small>{draft.supplier||'Reservation draft'} · {Math.round(draft.confidence*100)}% confidence</small><p>{draft.startsAt?`${formatDay(draft.startsAt)} ${formatTime(draft.startsAt)}`:'Time needs review'}{draft.location?` · ${draft.location}`:''}</p></div>{draft.status==='pending'&&<aside><button onClick={()=>approve(draft)} disabled={!draft.startsAt}>Approve</button><button onClick={()=>discard(draft)}>Discard</button></aside>}</article>)}</section>:items.length?<section className="import-list">{items.map((item)=><button key={item.id} onClick={()=>open(item.id)}><span className="doc-icon sea"><FileText size={18}/></span><span><b>{item.subject||'Reservation email'}</b><small>{item.sender} · {formatDay(item.createdAt)}</small></span><em>{item.status}</em></button>)}</section>:<EmptyPanel icon={<FileText/>} title="No forwarded reservations" description="Create the address above, then forward an airline, hotel, train, or ticket confirmation."/>}</>
 }
@@ -397,13 +422,13 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (color: str
   return <div className="form-label">TRIP COLOUR<div className="color-row">{coverColors.map((color) => <button type="button" key={color} className={value === color ? 'selected' : ''} style={{ background: color }} onClick={() => onChange(color)} aria-label={`Use ${color}`} aria-pressed={value === color} />)}</div></div>
 }
 
-function TripFormSheet({ trip, onClose, onSubmit, onDelete }: { trip?: Trip; onClose: () => void; onSubmit: (input: TripInput) => Promise<void>; onDelete?: () => void }) {
+function TripFormSheet({ trip, suggestion, onClose, onSubmit, onDelete }: { trip?: Trip; suggestion?: TripSuggestion; onClose: () => void; onSubmit: (input: TripInput) => Promise<void>; onDelete?: () => void }) {
   const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [coverColor, setCoverColor] = useState(trip?.coverColor || coverColors[0])
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget); setBusy(true); setError('')
     try { await onSubmit({ title: String(form.get('title')), destination: String(form.get('destination')), startDate: toAPIDate(String(form.get('startDate'))), endDate: toAPIDate(String(form.get('endDate'))), coverColor }) } catch (err) { setError(message(err)); setBusy(false) }
   }
-  return <Sheet title={trip ? 'Trip settings' : 'Create a trip'} eyebrow={trip ? 'EDIT THIS TRIP' : 'START A NEW ADVENTURE'} onClose={onClose}><form onSubmit={submit}><label className="form-label">TRIP NAME<input name="title" defaultValue={trip?.title} placeholder="Barcelona weekend" required maxLength={100} /></label><label className="form-label">DESTINATION<input name="destination" defaultValue={trip?.destination} placeholder="Barcelona, Spain" required maxLength={120} /></label><div className="input-pair"><label className="form-label">START<input name="startDate" type="date" defaultValue={toDateInput(trip?.startDate)} required /></label><label className="form-label">END<input name="endDate" type="date" defaultValue={toDateInput(trip?.endDate)} required /></label></div><ColorPicker value={coverColor} onChange={setCoverColor} />{error && <p className="form-error">{error}</p>}<button className="save-button" disabled={busy}>{busy ? 'Saving…' : trip ? 'Save changes' : 'Create trip'}</button>{onDelete && <button type="button" className="save-button soft danger" onClick={onDelete}><Trash2 size={15} /> Delete this trip</button>}</form></Sheet>
+  return <Sheet title={trip ? 'Trip settings' : suggestion ? 'Create the suggested trip' : 'Create a trip'} eyebrow={trip ? 'EDIT THIS TRIP' : suggestion ? 'FROM A FORWARDED EMAIL' : 'START A NEW ADVENTURE'} onClose={onClose}><form onSubmit={submit}>{suggestion && <p className="confirm-body">Filled in from the forwarded reservation. Check each field — nothing is created until you save.</p>}<label className="form-label">TRIP NAME<input name="title" defaultValue={trip?.title ?? suggestion?.title} placeholder="Barcelona weekend" required maxLength={100} /></label><label className="form-label">DESTINATION<input name="destination" defaultValue={trip?.destination ?? suggestion?.destination} placeholder="Barcelona, Spain" required maxLength={120} /></label><div className="input-pair"><label className="form-label">START<input name="startDate" type="date" defaultValue={toDateInput(trip?.startDate) || suggestion?.startDate || ''} required /></label><label className="form-label">END<input name="endDate" type="date" defaultValue={toDateInput(trip?.endDate) || suggestion?.endDate || ''} required /></label></div><ColorPicker value={coverColor} onChange={setCoverColor} />{error && <p className="form-error">{error}</p>}<button className="save-button" disabled={busy}>{busy ? 'Saving…' : trip ? 'Save changes' : 'Create trip'}</button>{onDelete && <button type="button" className="save-button soft danger" onClick={onDelete}><Trash2 size={15} /> Delete this trip</button>}</form></Sheet>
 }
 
 function PlanFormSheet({ plan, onClose, onSubmit }: { plan?: Plan; onClose: () => void; onSubmit: (input: PlanInput, planID?: string) => Promise<void> }) {
@@ -426,6 +451,39 @@ function RouteFormSheet({ option, onClose, onSubmit }: { option?: RouteOption; o
 function Sheet({ eyebrow,title,onClose,className,children }:{eyebrow:string;title:string;onClose:()=>void;className?:string;children:ReactNode}){return <div className="overlay" onMouseDown={onClose}><section className={`sheet${className?` ${className}`:''}`} onMouseDown={(event)=>event.stopPropagation()}><div className="sheet-handle"/><div className="sheet-heading"><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div><button className="close-button" onClick={onClose} aria-label="Close"><X size={20}/></button></div>{children}</section></div>}
 function EmptyTrips({ onCreate }:{onCreate:()=>void}){return <section className="empty-trips"><span className="brand-mark">W</span><p className="eyebrow">YOUR TRAVEL SPACE</p><h1>Start your first shared trip.</h1><p>Bring your bookings, plans, and travel documents into one place before the group chat gets chaotic.</p><button className="save-button" onClick={onCreate}><Plus size={18}/> Create a trip</button></section>}
 function EmptyPanel({ icon,title,description }:{icon:ReactNode;title:string;description:string}){return <section className="empty-panel"><span>{icon}</span><b>{title}</b><p>{description}</p></section>}
+
+// A trip is only worth suggesting when the extraction produced something to build it
+// from: real dates and a place. Keyword fallbacks have neither, so they never qualify.
+// The result is a starting point for the create form, never a trip created outright.
+const destinationPriority: PlanKind[] = ['stay', 'activity', 'food', 'transport', 'flight', 'other']
+
+export function deriveTripSuggestion(drafts: ReservationDraft[]): TripSuggestion | null {
+  const usable = drafts.filter((draft) => draft.status !== 'discarded' && draft.startsAt)
+  if (!usable.length) return null
+  const destination = suggestDestination(usable)
+  if (!destination) return null
+  const starts = usable.map((draft) => draft.startsAt!).sort()
+  const ends = usable.map((draft) => draft.endsAt || draft.startsAt!).sort()
+  return {
+    destination,
+    title: `${destination}, ${new Intl.DateTimeFormat(undefined, { month: 'long' }).format(new Date(starts[0]))}`,
+    startDate: starts[0].slice(0, 10),
+    endDate: ends[ends.length - 1].slice(0, 10),
+    confidence: Math.min(...usable.map((draft) => draft.confidence)),
+  }
+}
+
+function suggestDestination(drafts: ReservationDraft[]): string {
+  for (const kind of destinationPriority) {
+    const match = drafts.find((draft) => draft.kind === kind && draft.location.trim())
+    // Addresses conventionally end with the city, and a whole street address makes
+    // a poor destination. The user edits this before anything is created.
+    if (match) return match.location.split(',').map((part) => part.trim()).filter(Boolean).pop() || ''
+  }
+  // Flight titles from the extractor read "BA487 London → Barcelona".
+  const routed = drafts.map((draft) => draft.title).find((title) => title.includes('→'))
+  return routed ? routed.split('→').pop()!.trim() : ''
+}
 
 // Mirror the server's ordering so an optimistic insert lands where a reload would put it.
 function sortPlans(plans:Plan[]){return [...plans].sort((a,b)=>a.startsAt.localeCompare(b.startsAt))}

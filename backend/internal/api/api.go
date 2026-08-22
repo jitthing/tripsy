@@ -791,6 +791,8 @@ func (a *API) approveDraft(w http.ResponseWriter, r *http.Request) {
 		a.handleError(w, err)
 		return
 	}
+	// An approved draft becomes a plan like any other, so it syncs like one.
+	_ = a.store.QueueCalendarSync(r.Context(), userID(r))
 	respond(w, http.StatusCreated, plan)
 }
 func (a *API) discardDraft(w http.ResponseWriter, r *http.Request) {
