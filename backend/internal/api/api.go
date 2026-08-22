@@ -259,12 +259,19 @@ func (a *API) resendWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 }
+// importToken pulls the token out of imports-<token>@domain. Tokens are
+// base64url and therefore case-sensitive, so only the prefix match may ignore
+// case — lowercasing the whole address destroys the token.
 func importToken(address string) string {
-	local, _, ok := strings.Cut(strings.ToLower(strings.TrimSpace(address)), "@")
+	local, _, ok := strings.Cut(strings.TrimSpace(address), "@")
 	if !ok {
 		return ""
 	}
-	return strings.TrimPrefix(local, "imports-")
+	const prefix = "imports-"
+	if len(local) <= len(prefix) || !strings.EqualFold(local[:len(prefix)], prefix) {
+		return ""
+	}
+	return local[len(prefix):]
 }
 
 func (a *API) authenticate(next http.Handler) http.Handler {

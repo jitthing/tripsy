@@ -91,7 +91,10 @@ func (s *Store) EnsureUserImportAddress(ctx context.Context, userID, token strin
 
 func (s *Store) ImportAddressForToken(ctx context.Context, token string) (ImportAddress, error) {
 	var address ImportAddress
-	err := s.DB.QueryRow(ctx, `select trip_id, token, owner_id from import_addresses where token=$1`, token).Scan(&address.TripID, &address.Token, &address.OwnerID)
+	// Some mail infrastructure normalises the local part, so match without regard
+	// to case. Tokens are 32 random base64url characters; a case collision is not
+	// a practical concern.
+	err := s.DB.QueryRow(ctx, `select trip_id, token, owner_id from import_addresses where lower(token)=lower($1)`, token).Scan(&address.TripID, &address.Token, &address.OwnerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ImportAddress{}, ErrNotFound
 	}

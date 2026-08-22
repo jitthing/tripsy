@@ -30,3 +30,8 @@ create policy "create import address" on public.import_addresses for insert to a
   with check (owner_id = auth.uid() and (trip_id is null or public.is_trip_member(trip_id)));
 create policy "delete import address" on public.import_addresses for delete to authenticated
   using (owner_id = auth.uid() or (trip_id is not null and public.is_trip_member(trip_id)));
+
+-- Forwarding addresses are matched case-insensitively, because mail systems may
+-- normalise the local part in transit while the token itself is base64url.
+create index if not exists import_addresses_token_lower_idx
+  on public.import_addresses(lower(token));
