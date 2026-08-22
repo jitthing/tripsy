@@ -68,6 +68,7 @@ func New(st *store.Store, verifier *auth.Verifier, logger *slog.Logger, cfg Conf
 		r.Get("/me", a.me)
 		r.Get("/trips", a.listTrips)
 		r.Get("/inbox", a.listInbox)
+		r.Post("/inbox/address", a.inboxAddress)
 		r.Post("/trips", a.createTrip)
 		r.Route("/trips/{tripID}", func(r chi.Router) {
 			r.Get("/", a.tripDetail)
@@ -215,36 +216,40 @@ func (a *API) resendWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	var address store.ImportAddress
+	var tripID *string
 	var ownerID string
 	found := false
+	// A minted address wins: it names its own owner, and a personal one carries no
+	// trip. The configured address is only a catch-all for a single-owner install.
 	for _, recipient := range event.Data.To {
-		if a.inboundAddress != "" && strings.ToLower(strings.TrimSpace(recipient)) == a.inboundAddress {
-			ownerID = a.inboundOwnerID
-			found = ownerID != ""
-			break
-		}
 		token := importToken(recipient)
 		if token == "" {
 			continue
 		}
 		candidate, lookupErr := a.store.ImportAddressForToken(r.Context(), token)
 		if lookupErr == nil {
-			address = candidate
-			// Legacy trip-bound addresses predate owner_id on imports. Use the
-			// address creator so the UUID column is never populated with ''.
-			ownerID = candidate.CreatedBy
+			tripID = candidate.TripID
+			ownerID = candidate.OwnerID
 			found = true
 			break
 		}
 	}
+	if !found && a.inboundAddress != "" && a.inboundOwnerID != "" {
+		for _, recipient := range event.Data.To {
+			if strings.ToLower(strings.TrimSpace(recipient)) == a.inboundAddress {
+				ownerID = a.inboundOwnerID
+				found = true
+				break
+			}
+		}
+	}
 	if !found {
+		// Dropping mail silently is what makes this impossible to debug from the outside.
+		a.logger.Warn("inbound email matched no forwarding address",
+			"to", strings.Join(event.Data.To, ","), "from", event.Data.From, "emailID", event.Data.EmailID,
+			"catchAllConfigured", a.inboundAddress != "" && a.inboundOwnerID != "")
 		w.WriteHeader(http.StatusNoContent)
 		return
-	}
-	var tripID *string
-	if address.TripID != "" {
-		tripID = &address.TripID
 	}
 	_, _, err = a.store.CreateInboundImport(r.Context(), tripID, ownerID, event.Data.EmailID, r.Header.Get("svix-id"), event.Data.From, event.Data.Subject, &event.Data.CreatedAt)
 	if err != nil {
@@ -691,6 +696,27 @@ func (a *API) deleteDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// inboxAddress returns the caller's personal forwarding address. Anything sent to
+// it lands in their own inbox with no trip attached, so every user gets one
+// without the server needing a configured owner.
+func (a *API) inboxAddress(w http.ResponseWriter, r *http.Request) {
+	if a.inboundDomain == "" {
+		fail(w, http.StatusServiceUnavailable, "reservation imports are not configured")
+		return
+	}
+	token, err := newImportToken()
+	if err != nil {
+		a.handleError(w, err)
+		return
+	}
+	address, err := a.store.EnsureUserImportAddress(r.Context(), userID(r), token)
+	if err != nil {
+		a.handleError(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]string{"address": "imports-" + address.Token + "@" + a.inboundDomain})
 }
 
 func (a *API) importAddress(w http.ResponseWriter, r *http.Request) {

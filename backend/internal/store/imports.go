@@ -11,10 +11,12 @@ import (
 
 var ErrConflict = errors.New("conflict")
 
+// ImportAddress routes forwarded mail. TripID nil means a personal inbox address:
+// imports land in OwnerID's inbox with no trip until they assign one on review.
 type ImportAddress struct {
-	TripID    string `json:"tripId"`
-	Token     string `json:"token"`
-	CreatedBy string `json:"-"`
+	TripID  *string `json:"tripId,omitempty"`
+	Token   string  `json:"token"`
+	OwnerID string  `json:"-"`
 }
 
 type ReservationImport struct {
@@ -71,15 +73,25 @@ func (s *Store) EnsureImportAddress(ctx context.Context, tripID, userID, token s
 		return ImportAddress{}, ErrForbidden
 	}
 	var address ImportAddress
-	err = s.DB.QueryRow(ctx, `insert into trip_import_addresses (trip_id, token, created_by) values ($1,$2,$3)
-    on conflict (trip_id) do update set trip_id = excluded.trip_id
-    returning trip_id, token`, tripID, token, userID).Scan(&address.TripID, &address.Token)
+	err = s.DB.QueryRow(ctx, `insert into import_addresses (trip_id, token, created_by, owner_id) values ($1,$2,$3,$3)
+    on conflict (trip_id) where trip_id is not null do update set trip_id = excluded.trip_id
+    returning trip_id, token, owner_id`, tripID, token, userID).Scan(&address.TripID, &address.Token, &address.OwnerID)
+	return address, err
+}
+
+// EnsureUserImportAddress returns the caller's personal forwarding address,
+// creating it on first use. One per owner, enforced by a partial unique index.
+func (s *Store) EnsureUserImportAddress(ctx context.Context, userID, token string) (ImportAddress, error) {
+	var address ImportAddress
+	err := s.DB.QueryRow(ctx, `insert into import_addresses (trip_id, token, created_by, owner_id) values (null,$1,$2,$2)
+    on conflict (owner_id) where trip_id is null do update set owner_id = excluded.owner_id
+    returning trip_id, token, owner_id`, token, userID).Scan(&address.TripID, &address.Token, &address.OwnerID)
 	return address, err
 }
 
 func (s *Store) ImportAddressForToken(ctx context.Context, token string) (ImportAddress, error) {
 	var address ImportAddress
-	err := s.DB.QueryRow(ctx, `select trip_id, token, created_by from trip_import_addresses where token=$1`, token).Scan(&address.TripID, &address.Token, &address.CreatedBy)
+	err := s.DB.QueryRow(ctx, `select trip_id, token, owner_id from import_addresses where token=$1`, token).Scan(&address.TripID, &address.Token, &address.OwnerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ImportAddress{}, ErrNotFound
 	}

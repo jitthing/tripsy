@@ -57,6 +57,7 @@ export const api = {
   updateRouteOption: (tripId: string, optionId: string, input: RouteOptionInput) => request<RouteOption>(`/v1/trips/${tripId}/route-options/${optionId}`, { method: 'PATCH', body: JSON.stringify(input) }),
   deleteRouteOption: (tripId: string, optionId: string) => request<void>(`/v1/trips/${tripId}/route-options/${optionId}`, { method: 'DELETE' }),
   getImportAddress: (tripId: string) => request<{ address: string }>(`/v1/trips/${tripId}/import-address`, { method: 'POST' }),
+  getInboxAddress: () => request<{ address: string }>('/v1/inbox/address', { method: 'POST' }),
   listImports: (tripId: string) => request<ReservationImport[]>(`/v1/trips/${tripId}/imports`),
   getImport: (importId: string) => request<ImportDetail>(`/v1/imports/${importId}`),
   approveDraft: (importId: string, draft: ReservationDraft) => request<Plan>(`/v1/imports/${importId}/drafts/${draft.id}/approve`, { method: 'POST', body: JSON.stringify({ kind: draft.kind, title: draft.title, startsAt: draft.startsAt, endsAt: draft.endsAt, location: draft.location, confirmationCode: draft.confirmationCode, notes: draft.notes, timeZone: draft.timeZone }) }),

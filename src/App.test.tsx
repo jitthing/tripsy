@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   api: {
     listTrips: vi.fn(),
     listInbox: vi.fn(),
+    getInboxAddress: vi.fn(),
     getTrip: vi.fn(),
     createPlan: vi.fn(),
     updatePlan: vi.fn(),
@@ -128,6 +129,7 @@ describe('URL routing', () => {
 
   it('routes the inbox at its own path', async () => {
     mocks.api.listInbox.mockResolvedValue([])
+    mocks.api.getInboxAddress.mockResolvedValue({ address: 'imports-abc123@chaearkie.resend.app' })
     render(<App />)
     await screen.findByRole('heading', { name: 'Lisbon' })
 
