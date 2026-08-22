@@ -30,6 +30,9 @@ type Config struct {
 	ImportProcessor     *importer.Processor
 	Calendar            *calendar.Service
 	AppURL              string
+	// BasePath is the prefix a proxy mounts this API under, e.g. "/api". Requests
+	// arrive with it still attached when the proxy forwards the path unchanged.
+	BasePath string
 }
 type API struct {
 	store               *store.Store
@@ -96,7 +99,32 @@ func New(st *store.Store, verifier *auth.Verifier, logger *slog.Logger, cfg Conf
 		r.Post("/calendar/sync", a.calendarSync)
 		r.Delete("/calendar", a.calendarDisconnect)
 	})
-	return r
+	return stripBasePath(cfg.BasePath, r)
+}
+
+// stripBasePath removes a mount prefix before routing. It is tolerant on purpose:
+// a request that already arrives without the prefix still routes, so the same
+// binary serves a proxy that strips the prefix and one that does not, and a
+// health check on the bare path keeps working either way.
+func stripBasePath(prefix string, next http.Handler) http.Handler {
+	prefix = strings.TrimSuffix(strings.TrimSpace(prefix), "/")
+	if prefix == "" || prefix == "/" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		trimmed := strings.TrimPrefix(r.URL.Path, prefix)
+		if len(trimmed) == len(r.URL.Path) || (trimmed != "" && trimmed[0] != '/') {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if trimmed == "" {
+			trimmed = "/"
+		}
+		routed := r.Clone(r.Context())
+		routed.URL.Path = trimmed
+		routed.URL.RawPath = ""
+		next.ServeHTTP(w, routed)
+	})
 }
 
 func (a *API) calendarConnect(w http.ResponseWriter, r *http.Request) {

@@ -48,7 +48,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              ":" + env("PORT", "8080"),
-		Handler:           api.New(st, verifier, logger, api.Config{AllowedOrigins: strings.Split(env("CORS_ORIGINS", "http://localhost:5173"), ","), InboundDomain: env("RESEND_INBOUND_DOMAIN", ""), InboundAddress: env("RESEND_INBOUND_ADDRESS", ""), InboundOwnerID: env("RESEND_INBOUND_OWNER_ID", ""), ResendWebhookSecret: env("RESEND_WEBHOOK_SECRET", ""), ImportProcessor: importProcessor, Calendar: calendarService, AppURL: env("APP_URL", "http://localhost:5173")}),
+		Handler:           api.New(st, verifier, logger, api.Config{AllowedOrigins: strings.Split(env("CORS_ORIGINS", "http://localhost:5173"), ","), InboundDomain: env("RESEND_INBOUND_DOMAIN", ""), InboundAddress: env("RESEND_INBOUND_ADDRESS", ""), InboundOwnerID: env("RESEND_INBOUND_OWNER_ID", ""), ResendWebhookSecret: env("RESEND_WEBHOOK_SECRET", ""), ImportProcessor: importProcessor, Calendar: calendarService, AppURL: env("APP_URL", "http://localhost:5173"), BasePath: env("API_BASE_PATH", "")}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

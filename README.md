@@ -16,6 +16,7 @@ Use Node.js 22 or later for development and deployment.
 ## Deploy
 
 1. Deploy the API using [render.yaml](/Users/jittair/Documents/ChatGPT/exchange/render.yaml), or deploy `backend/Dockerfile` to any container host. Set `DATABASE_URL`, `SUPABASE_URL`, and `CORS_ORIGINS=https://<your-frontend-domain>`.
+   The API serves `/health` and `/v1/*`. If a proxy mounts it under a prefix and forwards the path unchanged — for example `https://<domain>/api/v1/trips` — set `API_BASE_PATH=/api` so the prefix is stripped before routing; without it the router has no matching route and returns a plain-text `404 page not found`. Requests on the bare path keep working either way, so the health check needs no change.
 2. Deploy this repository root to Vercel. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_API_URL=https://<your-api-domain>` at build time. [vercel.json](/Users/jittair/Documents/ChatGPT/exchange/vercel.json) serves the SPA for all client routes.
    The app uses real paths (`/trip/<id>/plans`, `/inbox`, `/search`), so the host must return `index.html` for any unmatched path. After deploying, load a deep link such as `https://<your-frontend-domain>/inbox` directly in a fresh tab; a 404 there means the SPA fallback is not configured.
 3. Add the production frontend origin to Supabase Auth redirect URLs and update `CORS_ORIGINS` with that exact origin.
