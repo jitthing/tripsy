@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,7 +38,8 @@ func main() {
 	}
 	var extractor importer.Extractor
 	if apiKey, model := env("OPENROUTER_API_KEY", ""), env("OPENROUTER_MODEL", ""); apiKey != "" && model != "" {
-		extractor, err = importer.NewOpenRouterExtractor(apiKey, model)
+		timeout := time.Duration(envInt("OPENROUTER_TIMEOUT_SECONDS", 30)) * time.Second
+		extractor, err = importer.NewOpenRouterExtractor(apiKey, model, timeout)
 		if err != nil {
 			logger.Error("configure OpenRouter extractor", "error", err)
 			os.Exit(1)
@@ -89,6 +91,15 @@ func runWorkers(ctx context.Context, logger *slog.Logger, imports *importer.Proc
 		case <-ticker.C:
 		}
 	}
+}
+
+func envInt(key string, fallback int) int {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return fallback
 }
 
 func env(key, fallback string) string {

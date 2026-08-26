@@ -131,11 +131,16 @@ func (p *Processor) process(ctx context.Context, item store.ReservationImport) (
 	case strings.TrimSpace(text) == "":
 		extractionError = "No readable text was found in the email or its attachments."
 	default:
+		startedAt := time.Now()
 		extracted, extractErr := p.Extractor.Extract(ctx, text)
 		switch {
 		case extractErr != nil:
+			// The elapsed time separates a client timeout from the host killing the
+			// process: a clean timeout lands on the configured limit, a kill does not.
+			elapsed := time.Since(startedAt)
 			extractionError = truncate(extractErr.Error(), 400)
-			p.log().Error("reservation extraction failed", "importID", item.ID, "error", extractErr)
+			p.log().Error("reservation extraction failed", "importID", item.ID,
+				"elapsedSeconds", elapsed.Round(time.Millisecond).Seconds(), "textBytes", len(text), "error", extractErr)
 		case len(extracted) == 0:
 			extractionError = "The extractor found no reservations in this email."
 			p.log().Warn("reservation extraction returned no drafts", "importID", item.ID)
@@ -263,14 +268,20 @@ func (e *OpenRouterExtractor) endpoint() string {
 	return e.Endpoint
 }
 
-func NewOpenRouterExtractor(apiKey, model string) (*OpenRouterExtractor, error) {
+// NewOpenRouterExtractor builds the extractor. Keep timeout below the host's
+// own request or execution limit: a client timeout records why extraction failed,
+// whereas the host killing the process strands the import until its lease expires.
+func NewOpenRouterExtractor(apiKey, model string, timeout time.Duration) (*OpenRouterExtractor, error) {
 	if apiKey == "" || model == "" {
 		return nil, fmt.Errorf("OpenRouter extraction is not configured")
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
 	return &OpenRouterExtractor{
 		APIKey: apiKey,
 		Model:  model,
-		Client: &http.Client{Timeout: 60 * time.Second},
+		Client: &http.Client{Timeout: timeout},
 	}, nil
 }
 
@@ -319,7 +330,9 @@ func (e *OpenRouterExtractor) Extract(ctx context.Context, text string) ([]store
 		return nil, err
 	}
 	if completion.Error != nil {
-		return nil, fmt.Errorf("openrouter error: %s", completion.Error.Message)
+		// Name the model: an abort is usually the provider rejecting the request
+		// (often structured outputs), which is model-specific.
+		return nil, fmt.Errorf("openrouter error from %s: %s", e.Model, completion.Error.Message)
 	}
 	if len(completion.Choices) == 0 {
 		return nil, fmt.Errorf("openrouter returned no choices")
