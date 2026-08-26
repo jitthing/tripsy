@@ -285,4 +285,33 @@ describe('Plan detail, edit, and delete', () => {
     await screen.findByText('Trip updated')
     expect(mocks.api.updateTrip).toHaveBeenCalledWith('trip-1', expect.objectContaining({ title: 'Lisbon weekend', coverColor: '#d5634d' }))
   })
+
+  // Day labels are locale-formatted, so pick cells by the number they show instead.
+  const day = (number: number) => screen.getAllByRole('button').find((button) => button.classList.contains('drp-day') && button.textContent === String(number))!
+
+  it('submits the range chosen in the date picker', async () => {
+    mocks.api.updateTrip.mockResolvedValue(trip)
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Trip settings' }))
+    fireEvent.click(day(12))
+    fireEvent.click(day(15))
+    expect(screen.getByText('3 nights', { selector: '.drp-nights' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await screen.findByText('Trip updated')
+    expect(mocks.api.updateTrip).toHaveBeenCalledWith('trip-1', expect.objectContaining({ startDate: '2026-09-12T00:00:00.000Z', endDate: '2026-09-15T00:00:00.000Z' }))
+  })
+
+  it('re-anchors on an earlier day rather than saving a backwards range', async () => {
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Trip settings' }))
+    fireEvent.click(day(20))
+    fireEvent.click(day(4))
+
+    expect(screen.getByText('0 nights')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+    expect(mocks.api.updateTrip).not.toHaveBeenCalled()
+  })
 })

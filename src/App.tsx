@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import {
-  CalendarDays, Check, ChevronDown, FileText, FolderOpen, Globe2, Hotel, LoaderCircle,
+  CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, FolderOpen, Globe2, Hotel, LoaderCircle,
   Clock3, LogOut, MapPin, MoreHorizontal, PackageCheck, Pencil, Plane, Plus, Route, Search, Settings2,
   ShieldCheck, Ticket, TrainFront, Trash2, TriangleAlert, Upload, UsersRound, X,
 } from 'lucide-react'
@@ -430,11 +430,67 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (color: str
 
 function TripFormSheet({ trip, suggestion, onClose, onSubmit, onDelete }: { trip?: Trip; suggestion?: TripSuggestion; onClose: () => void; onSubmit: (input: TripInput) => Promise<void>; onDelete?: () => void }) {
   const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [coverColor, setCoverColor] = useState(trip?.coverColor || coverColors[0])
+  const [startDate, setStartDate] = useState(toDateInput(trip?.startDate) || suggestion?.startDate || '')
+  const [endDate, setEndDate] = useState(toDateInput(trip?.endDate) || suggestion?.endDate || '')
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget); setBusy(true); setError('')
+    // Hidden inputs are exempt from constraint validation, so the dates are checked here.
+    if (!form.get('startDate') || !form.get('endDate')) { setError('Pick a check-in and a check-out date.'); setBusy(false); return }
     try { await onSubmit({ title: String(form.get('title')), destination: String(form.get('destination')), startDate: toAPIDate(String(form.get('startDate'))), endDate: toAPIDate(String(form.get('endDate'))), coverColor }) } catch (err) { setError(message(err)); setBusy(false) }
   }
-  return <Sheet title={trip ? 'Trip settings' : suggestion ? 'Create the suggested trip' : 'Create a trip'} eyebrow={trip ? 'EDIT THIS TRIP' : suggestion ? 'FROM A FORWARDED EMAIL' : 'START A NEW ADVENTURE'} onClose={onClose}><form onSubmit={submit}>{suggestion && <p className="confirm-body">Filled in from the forwarded reservation. Check each field — nothing is created until you save.</p>}<label className="form-label">TRIP NAME<input name="title" defaultValue={trip?.title ?? suggestion?.title} placeholder="Barcelona weekend" required maxLength={100} /></label><label className="form-label">DESTINATION<input name="destination" defaultValue={trip?.destination ?? suggestion?.destination} placeholder="Barcelona, Spain" required maxLength={120} /></label><div className="input-pair"><label className="form-label">START<input name="startDate" type="date" defaultValue={toDateInput(trip?.startDate) || suggestion?.startDate || ''} required /></label><label className="form-label">END<input name="endDate" type="date" defaultValue={toDateInput(trip?.endDate) || suggestion?.endDate || ''} required /></label></div><ColorPicker value={coverColor} onChange={setCoverColor} />{error && <p className="form-error">{error}</p>}<button className="save-button" disabled={busy}>{busy ? 'Saving…' : trip ? 'Save changes' : 'Create trip'}</button>{onDelete && <button type="button" className="save-button soft danger" onClick={onDelete}><Trash2 size={15} /> Delete this trip</button>}</form></Sheet>
+  return <Sheet title={trip ? 'Trip settings' : suggestion ? 'Create the suggested trip' : 'Create a trip'} eyebrow={trip ? 'EDIT THIS TRIP' : suggestion ? 'FROM A FORWARDED EMAIL' : 'START A NEW ADVENTURE'} onClose={onClose}><form onSubmit={submit}>{suggestion && <p className="confirm-body">Filled in from the forwarded reservation. Check each field — nothing is created until you save.</p>}<label className="form-label">TRIP NAME<input name="title" defaultValue={trip?.title ?? suggestion?.title} placeholder="Barcelona weekend" required maxLength={100} /></label><label className="form-label">DESTINATION<input name="destination" defaultValue={trip?.destination ?? suggestion?.destination} placeholder="Barcelona, Spain" required maxLength={120} /></label><DateRangePicker startDate={startDate} endDate={endDate} onChange={(nextStart, nextEnd) => { setStartDate(nextStart); setEndDate(nextEnd) }} /><input type="hidden" name="startDate" value={startDate} /><input type="hidden" name="endDate" value={endDate} /><ColorPicker value={coverColor} onChange={setCoverColor} />{error && <p className="form-error">{error}</p>}<button className="save-button" disabled={busy || !startDate || !endDate}>{busy ? 'Saving…' : trip ? 'Save changes' : 'Create trip'}</button>{onDelete && <button type="button" className="save-button soft danger" onClick={onDelete}><Trash2 size={15} /> Delete this trip</button>}</form></Sheet>
+}
+
+// The calendar works entirely in "YYYY-MM-DD" keys — the same shape the form submits — so
+// nothing here can drift a day across time zones the way a Date round-trip can.
+const weekdayInitials = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+const rangePresets: { label: string; nights: number; fromWeekend?: boolean }[] = [
+  { label: 'Weekend', nights: 2, fromWeekend: true },
+  { label: '3 nights', nights: 3 },
+  { label: '1 week', nights: 7 },
+  { label: '2 weeks', nights: 14 },
+]
+
+function DateRangePicker({ startDate, endDate, onChange }: { startDate: string; endDate: string; onChange: (start: string, end: string) => void }) {
+  const today = dateKey(new Date())
+  const [month, setMonth] = useState(() => monthStart(startDate || today))
+  const first = new Date(month.getFullYear(), month.getMonth(), 1)
+  // Monday-first grid: shift Sunday (0) to the end of the week.
+  const lead = (first.getDay() + 6) % 7
+  const days = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate()
+  const cells = [...Array(lead).fill(''), ...Array.from({ length: days }, (_, index) => dateKey(new Date(month.getFullYear(), month.getMonth(), index + 1)))]
+  const stay = startDate && endDate ? nightsBetween(startDate, endDate) : 0
+
+  // A click either closes the open range or re-anchors it; an earlier day always re-anchors,
+  // so an end before the start is unreachable rather than merely rejected.
+  function pick(day: string) {
+    if (!startDate || endDate || day < startDate) { onChange(day, ''); return }
+    onChange(startDate, day)
+  }
+  function applyPreset(nights: number, fromWeekend?: boolean) {
+    const from = fromWeekend ? nextFriday(today) : today
+    onChange(from, addDays(from, nights)); setMonth(monthStart(from))
+  }
+  function shiftMonth(step: number) { setMonth(new Date(month.getFullYear(), month.getMonth() + step, 1)) }
+
+  return <div className="date-range-picker">
+    <div className="drp-head"><p className="eyebrow">TRIP DATES</p><span className="drp-nights">{stay} night{stay === 1 ? '' : 's'}</span></div>
+    <div className="drp-fields">
+      <button type="button" className={startDate ? 'drp-field filled' : 'drp-field'} onClick={() => startDate && setMonth(monthStart(startDate))}><small>CHECK-IN</small><b>{startDate ? formatKey(startDate) : 'Select a date'}</b></button>
+      <button type="button" className={endDate ? 'drp-field filled' : 'drp-field'} onClick={() => endDate && setMonth(monthStart(endDate))}><small>CHECK-OUT</small><b>{endDate ? formatKey(endDate) : 'Select a date'}</b></button>
+    </div>
+    <div className="drp-month"><button type="button" onClick={() => shiftMonth(-1)} aria-label="Previous month"><ChevronLeft size={17} /></button><b>{formatMonth(month)}</b><button type="button" onClick={() => shiftMonth(1)} aria-label="Next month"><ChevronRight size={17} /></button></div>
+    <div className="drp-weekdays" aria-hidden="true">{weekdayInitials.map((initial, index) => <span key={index}>{initial}</span>)}</div>
+    <div className="drp-grid">{cells.map((day, index) => {
+      if (!day) return <span key={`blank-${index}`} />
+      const selected = day === startDate || day === endDate
+      const within = Boolean(endDate) && day > startDate && day < endDate
+      // A lone anchor is both ends of itself, so it stays a full rounded pill until a range closes.
+      const edges = `${day === startDate ? ' start' : ''}${day === (endDate || startDate) ? ' end' : ''}`
+      return <button type="button" key={day} className={`drp-day${selected ? ` selected${edges}` : ''}${within ? ' within' : ''}${day === today ? ' today' : ''}`} onClick={() => pick(day)} aria-pressed={selected || within} aria-label={formatKeyLong(day)}>{Number(day.slice(8))}</button>
+    })}</div>
+    <div className="drp-presets">{rangePresets.map((preset) => <button type="button" key={preset.label} onClick={() => applyPreset(preset.nights, preset.fromWeekend)}>{preset.label}</button>)}<button type="button" className="drp-clear" onClick={() => onChange('', '')}>Clear</button></div>
+  </div>
 }
 
 function PlanFormSheet({ plan, onClose, onSubmit }: { plan?: Plan; onClose: () => void; onSubmit: (input: PlanInput, planID?: string) => Promise<void> }) {
@@ -511,6 +567,16 @@ function toAPIDate(value:string){return new Date(`${value}T00:00:00.000Z`).toISO
 function toDateInput(value?:string){return value?value.slice(0,10):''}
 // datetime-local expects wall-clock time in the viewer's zone, not UTC.
 function toLocalInput(value?:string){if(!value)return '';const date=new Date(value);const pad=(part:number)=>String(part).padStart(2,'0');return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`}
+// Calendar-key helpers for the date range picker: plain local "YYYY-MM-DD", never parsed as UTC.
+function dateKey(date:Date){const pad=(part:number)=>String(part).padStart(2,'0');return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}`}
+function fromKey(key:string){const [year,month,day]=key.split('-').map(Number);return new Date(year,month-1,day)}
+function monthStart(key:string){const date=fromKey(key);return new Date(date.getFullYear(),date.getMonth(),1)}
+function addDays(key:string,days:number){const date=fromKey(key);date.setDate(date.getDate()+days);return dateKey(date)}
+function nextFriday(key:string){return addDays(key,(5-fromKey(key).getDay()+7)%7)}
+function nightsBetween(start:string,end:string){return Math.max(0,Math.round((fromKey(end).getTime()-fromKey(start).getTime())/86400000))}
+function formatKey(key:string){return new Intl.DateTimeFormat(undefined,{day:'numeric',month:'short'}).format(fromKey(key))}
+function formatKeyLong(key:string){return new Intl.DateTimeFormat(undefined,{weekday:'long',day:'numeric',month:'long',year:'numeric'}).format(fromKey(key))}
+function formatMonth(date:Date){return new Intl.DateTimeFormat(undefined,{month:'long',year:'numeric'}).format(date)}
 function formatDay(value:string){return new Intl.DateTimeFormat(undefined,{day:'numeric',month:'short'}).format(new Date(value))}
 function formatTime(value:string){return new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(value))}
 function formatDateRange(start:string,end:string){return `${formatDay(start)} – ${formatDay(end)}`}
