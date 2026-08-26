@@ -44,6 +44,9 @@ func truncate(value string, limit int) string {
 }
 
 func (p *Processor) RunOnce(ctx context.Context) error {
+	if err := p.Store.RequeueStaleImports(ctx, 10*time.Minute, 3); err != nil {
+		return err
+	}
 	item, err := p.Store.ClaimQueuedImport(ctx)
 	if err == store.ErrNotFound {
 		return nil
@@ -57,10 +60,16 @@ func (p *Processor) RunOnce(ctx context.Context) error {
 	}
 	return nil
 }
-func (p *Processor) process(ctx context.Context, item store.ReservationImport) error {
+func (p *Processor) process(ctx context.Context, item store.ReservationImport) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic processing import: %v", r)
+		}
+	}()
 	if p.Resend == nil || p.Storage == nil {
 		return fmt.Errorf("reservation import is not configured")
 	}
+	_ = p.Store.StageImport(ctx, item.ID, "downloading")
 	email, err := p.Resend.GetReceivedEmail(ctx, item.ExternalEmailID)
 	if err != nil {
 		return err
@@ -84,6 +93,7 @@ func (p *Processor) process(ctx context.Context, item store.ReservationImport) e
 	if text == "" {
 		text = integrations.StripHTML(email.HTML)
 	}
+	_ = p.Store.StageImport(ctx, item.ID, "extracting")
 	attachments := make([]store.ImportAttachment, 0, len(email.Attachments))
 	for _, attachment := range email.Attachments {
 		if attachment.SizeBytes > 10*1024*1024 {
@@ -114,6 +124,7 @@ func (p *Processor) process(ctx context.Context, item store.ReservationImport) e
 	drafts := fallbackDraft(item.Subject, text)
 	usedLLM := false
 	extractionError := ""
+	_ = p.Store.StageImport(ctx, item.ID, "analyzing")
 	switch {
 	case p.Extractor == nil:
 		extractionError = "AI extraction is not configured on the server."

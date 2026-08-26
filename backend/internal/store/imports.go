@@ -30,12 +30,23 @@ type ReservationImport struct {
 	RawStoragePath  string     `json:"rawStoragePath"`
 	TextStoragePath string     `json:"textStoragePath"`
 	Status          string     `json:"status"`
+	Stage           string     `json:"stage"`
 	ErrorMessage    string     `json:"errorMessage"`
 	DuplicateOfID   *string    `json:"duplicateOfImportId,omitempty"`
 	UsedLLM         bool       `json:"usedLlm"`
 	CreatedAt       time.Time  `json:"createdAt"`
 	ExtractionError string     `json:"extractionError"`
+	Attempts        int        `json:"attempts"`
+	LockedAt        *time.Time `json:"lockedAt,omitempty"`
 }
+
+// importColumns lists the reservation_imports columns in ReservationImport field
+// order. pgx.RowToStructByPos maps by position, so the two must stay in step;
+// selecting through these constants keeps every query consistent.
+const importColumns = `id,trip_id,owner_id,external_email_id,sender,subject,received_at,raw_storage_path,text_storage_path,status,stage,error_message,duplicate_of_import_id,used_llm,created_at,extraction_error,attempts,locked_at`
+
+// importColumnsAliased is importColumns for queries that alias the table as "i".
+const importColumnsAliased = `i.id,i.trip_id,i.owner_id,i.external_email_id,i.sender,i.subject,i.received_at,i.raw_storage_path,i.text_storage_path,i.status,i.stage,i.error_message,i.duplicate_of_import_id,i.used_llm,i.created_at,i.extraction_error,i.attempts,i.locked_at`
 
 type ImportAttachment struct {
 	ID          string  `json:"id"`
@@ -107,8 +118,8 @@ func (s *Store) CreateInboundImport(ctx context.Context, tripID *string, ownerID
     values ($1,$2,$3,$4,$5,$6,$7)
     on conflict (external_email_id) do update set external_email_id = excluded.external_email_id
     returning id`, tripID, ownerID, externalEmailID, webhookID, sender, subject, receivedAt).Scan(&item.ID)
-	err = s.DB.QueryRow(ctx, `select id,trip_id,owner_id,external_email_id,sender,subject,received_at,raw_storage_path,text_storage_path,status,error_message,duplicate_of_import_id,used_llm,created_at,extraction_error from reservation_imports where external_email_id=$1`, externalEmailID).
-		Scan(&item.ID, &item.TripID, &item.OwnerID, &item.ExternalEmailID, &item.Sender, &item.Subject, &item.ReceivedAt, &item.RawStoragePath, &item.TextStoragePath, &item.Status, &item.ErrorMessage, &item.DuplicateOfID, &item.UsedLLM, &item.CreatedAt, &item.ExtractionError)
+	err = s.DB.QueryRow(ctx, `select `+importColumns+` from reservation_imports where external_email_id=$1`, externalEmailID).
+		Scan(&item.ID, &item.TripID, &item.OwnerID, &item.ExternalEmailID, &item.Sender, &item.Subject, &item.ReceivedAt, &item.RawStoragePath, &item.TextStoragePath, &item.Status, &item.Stage, &item.ErrorMessage, &item.DuplicateOfID, &item.UsedLLM, &item.CreatedAt, &item.ExtractionError, &item.Attempts, &item.LockedAt)
 	if err != nil {
 		return ReservationImport{}, false, err
 	}
@@ -135,24 +146,13 @@ func (s *Store) MarkPotentialDuplicate(ctx context.Context, importID, ownerID st
 	return nil
 }
 
-func (s *Store) RetryImport(ctx context.Context, importID, userID string) error {
-	result, err := s.DB.Exec(ctx, `update reservation_imports set status='queued',error_message='',extraction_error='',processed_at=null where id=$1 and owner_id=$2 and status='failed'`, importID, userID)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
 func (s *Store) ClaimQueuedImport(ctx context.Context) (ReservationImport, error) {
 	var item ReservationImport
 	err := s.DB.QueryRow(ctx, `with next as (
       select id from reservation_imports where status='queued' order by created_at for update skip locked limit 1
-    ) update reservation_imports i set status='processing' from next where i.id=next.id
-      returning i.id,i.trip_id,i.owner_id,i.external_email_id,i.sender,i.subject,i.received_at,i.raw_storage_path,i.text_storage_path,i.status,i.error_message,i.duplicate_of_import_id,i.used_llm,i.created_at,i.extraction_error`).
-		Scan(&item.ID, &item.TripID, &item.OwnerID, &item.ExternalEmailID, &item.Sender, &item.Subject, &item.ReceivedAt, &item.RawStoragePath, &item.TextStoragePath, &item.Status, &item.ErrorMessage, &item.DuplicateOfID, &item.UsedLLM, &item.CreatedAt, &item.ExtractionError)
+    ) update reservation_imports i set status='processing',stage='processing',locked_at=now(),attempts=attempts+1 from next where i.id=next.id
+      returning `+importColumnsAliased).
+		Scan(&item.ID, &item.TripID, &item.OwnerID, &item.ExternalEmailID, &item.Sender, &item.Subject, &item.ReceivedAt, &item.RawStoragePath, &item.TextStoragePath, &item.Status, &item.Stage, &item.ErrorMessage, &item.DuplicateOfID, &item.UsedLLM, &item.CreatedAt, &item.ExtractionError, &item.Attempts, &item.LockedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReservationImport{}, ErrNotFound
 	}
@@ -165,7 +165,7 @@ func (s *Store) CompleteImport(ctx context.Context, importID, rawPath, textPath 
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `update reservation_imports set status='review',raw_storage_path=$2,text_storage_path=$3,used_llm=$4,extraction_error=$5,error_message='',processed_at=now() where id=$1`, importID, rawPath, textPath, usedLLM, extractionError); err != nil {
+	if _, err = tx.Exec(ctx, `update reservation_imports set status='review',stage='review',raw_storage_path=$2,text_storage_path=$3,used_llm=$4,extraction_error=$5,error_message='',locked_at=null,processed_at=now() where id=$1`, importID, rawPath, textPath, usedLLM, extractionError); err != nil {
 		return err
 	}
 	for _, attachment := range attachments {
@@ -182,8 +182,37 @@ func (s *Store) CompleteImport(ctx context.Context, importID, rawPath, textPath 
 }
 
 func (s *Store) FailImport(ctx context.Context, importID string, cause error) error {
-	_, err := s.DB.Exec(ctx, `update reservation_imports set status='failed',error_message=$2,processed_at=now() where id=$1`, importID, cause.Error())
+	_, err := s.DB.Exec(ctx, `update reservation_imports set status='failed',stage='failed',error_message=$2,locked_at=null,processed_at=now() where id=$1`, importID, cause.Error())
 	return err
+}
+
+// StageImport records the current processing stage for user visibility. It
+// never changes the terminal status and is best-effort: a failure here must
+// not fail the overall processing job.
+func (s *Store) StageImport(ctx context.Context, importID, stage string) error {
+	_, err := s.DB.Exec(ctx, `update reservation_imports set stage=$2 where id=$1`, importID, stage)
+	return err
+}
+
+// RequeueStaleImports returns processing jobs whose lease expired to the queue
+// (or fails them once they exhaust attempts), so a crashed worker never leaves
+// an import stranded in 'processing' forever.
+func (s *Store) RequeueStaleImports(ctx context.Context, olderThan time.Duration, maxAttempts int) error {
+	_, err := s.DB.Exec(ctx, `update reservation_imports set status = case when attempts >= $2 then 'failed' else 'queued' end, stage = case when attempts >= $2 then 'failed' else 'queued' end, error_message = case when attempts >= $2 then 'processing timed out' else '' end, locked_at = null where status='processing' and locked_at < now() - make_interval(secs => $1)`, int64(olderThan.Seconds()), maxAttempts)
+	return err
+}
+
+// RetryImport resets a failed import back to the queue so the owner can
+// re-run processing after a failure.
+func (s *Store) RetryImport(ctx context.Context, importID, userID string) error {
+	result, err := s.DB.Exec(ctx, `update reservation_imports set status='queued',stage='queued',error_message='',extraction_error='',locked_at=null,processed_at=null where id=$1 and owner_id=$2 and status='failed'`, importID, userID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) ListImports(ctx context.Context, tripID, userID string) ([]ReservationImport, error) {
@@ -194,7 +223,7 @@ func (s *Store) ListImports(ctx context.Context, tripID, userID string) ([]Reser
 	if !allowed {
 		return nil, ErrForbidden
 	}
-	rows, err := s.DB.Query(ctx, `select id,trip_id,owner_id,external_email_id,sender,subject,received_at,raw_storage_path,text_storage_path,status,error_message,duplicate_of_import_id,used_llm,created_at,extraction_error from reservation_imports where trip_id=$1 order by created_at desc`, tripID)
+	rows, err := s.DB.Query(ctx, `select `+importColumns+` from reservation_imports where trip_id=$1 order by created_at desc`, tripID)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +232,7 @@ func (s *Store) ListImports(ctx context.Context, tripID, userID string) ([]Reser
 }
 
 func (s *Store) ListInbox(ctx context.Context, userID string) ([]ReservationImport, error) {
-	rows, err := s.DB.Query(ctx, `select id,trip_id,owner_id,external_email_id,sender,subject,received_at,raw_storage_path,text_storage_path,status,error_message,duplicate_of_import_id,used_llm,created_at,extraction_error from reservation_imports where owner_id=$1 order by created_at desc`, userID)
+	rows, err := s.DB.Query(ctx, `select `+importColumns+` from reservation_imports where owner_id=$1 order by created_at desc`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +260,7 @@ func (s *Store) AssignImport(ctx context.Context, importID, tripID, userID strin
 
 func (s *Store) ImportDetail(ctx context.Context, importID, userID string) (ReservationImport, []ReservationDraft, []ImportAttachment, error) {
 	var item ReservationImport
-	err := s.DB.QueryRow(ctx, `select i.id,i.trip_id,i.owner_id,i.external_email_id,i.sender,i.subject,i.received_at,i.raw_storage_path,i.text_storage_path,i.status,i.error_message,i.duplicate_of_import_id,i.used_llm,i.created_at,i.extraction_error from reservation_imports i where i.id=$1 and (i.owner_id=$2 or exists (select 1 from trips t where t.id=i.trip_id and (t.owner_id=$2 or exists (select 1 from trip_members m where m.trip_id=t.id and m.user_id=$2))))`, importID, userID).Scan(&item.ID, &item.TripID, &item.OwnerID, &item.ExternalEmailID, &item.Sender, &item.Subject, &item.ReceivedAt, &item.RawStoragePath, &item.TextStoragePath, &item.Status, &item.ErrorMessage, &item.DuplicateOfID, &item.UsedLLM, &item.CreatedAt, &item.ExtractionError)
+	err := s.DB.QueryRow(ctx, `select `+importColumnsAliased+` from reservation_imports i where i.id=$1 and (i.owner_id=$2 or exists (select 1 from trips t where t.id=i.trip_id and (t.owner_id=$2 or exists (select 1 from trip_members m where m.trip_id=t.id and m.user_id=$2))))`, importID, userID).Scan(&item.ID, &item.TripID, &item.OwnerID, &item.ExternalEmailID, &item.Sender, &item.Subject, &item.ReceivedAt, &item.RawStoragePath, &item.TextStoragePath, &item.Status, &item.Stage, &item.ErrorMessage, &item.DuplicateOfID, &item.UsedLLM, &item.CreatedAt, &item.ExtractionError, &item.Attempts, &item.LockedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReservationImport{}, nil, nil, ErrNotFound
 	}
