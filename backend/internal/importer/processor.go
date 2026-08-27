@@ -47,18 +47,31 @@ func (p *Processor) RunOnce(ctx context.Context) error {
 	if err := p.Store.RequeueStaleImports(ctx, 10*time.Minute, 3); err != nil {
 		return err
 	}
+	_, err := p.ProcessNext(ctx)
+	return err
+}
+
+// ReclaimStale returns imports abandoned by a worker that died mid-flight. Split
+// out of RunOnce so a batch runner reclaims once rather than before every item.
+func (p *Processor) ReclaimStale(ctx context.Context) error {
+	return p.Store.RequeueStaleImports(ctx, 10*time.Minute, 3)
+}
+
+// ProcessNext handles at most one queued import. The bool reports whether an
+// import was claimed, so a caller draining the queue knows when it is empty.
+func (p *Processor) ProcessNext(ctx context.Context) (bool, error) {
 	item, err := p.Store.ClaimQueuedImport(ctx)
 	if err == store.ErrNotFound {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := p.process(ctx, item); err != nil {
 		_ = p.Store.FailImport(ctx, item.ID, err)
-		return err
+		return true, err
 	}
-	return nil
+	return true, nil
 }
 func (p *Processor) process(ctx context.Context, item store.ReservationImport) (err error) {
 	defer func() {

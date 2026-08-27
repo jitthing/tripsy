@@ -1,6 +1,8 @@
 package api
 
 import (
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -74,3 +76,5 @@ func TestStripBasePathMapsTheMountRootToSlash(t *testing.T) {
 		t.Errorf("the mount root should become /, got %q", recorder.Body.String())
 	}
 }
+
+func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

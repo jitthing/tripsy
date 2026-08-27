@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,12 @@ type Config struct {
 	// BasePath is the prefix a proxy mounts this API under, e.g. "/api". Requests
 	// arrive with it still attached when the proxy forwards the path unchanged.
 	BasePath string
+	// CronSecret guards the worker endpoint. Empty disables the endpoint entirely,
+	// so a host without a scheduler never exposes an unauthenticated worker.
+	CronSecret string
+	// CronBudget caps how long one worker invocation spends draining queues. Keep
+	// it below the host's function timeout so the response is always written.
+	CronBudget time.Duration
 }
 type API struct {
 	store               *store.Store
@@ -44,6 +51,9 @@ type API struct {
 	inboundOwnerID      string
 	resendWebhookSecret string
 	calendar            *calendar.Service
+	imports             *importer.Processor
+	cronSecret          string
+	cronBudget          time.Duration
 	appURL              string
 }
 type contextKey string
@@ -55,7 +65,7 @@ func New(st *store.Store, verifier *auth.Verifier, logger *slog.Logger, cfg Conf
 	for _, origin := range cfg.AllowedOrigins {
 		origins[strings.TrimSpace(origin)] = true
 	}
-	a := &API{store: st, verifier: verifier, logger: logger, origins: origins, inboundDomain: cfg.InboundDomain, inboundAddress: strings.ToLower(strings.TrimSpace(cfg.InboundAddress)), inboundOwnerID: cfg.InboundOwnerID, resendWebhookSecret: cfg.ResendWebhookSecret, calendar: cfg.Calendar, appURL: cfg.AppURL}
+	a := &API{store: st, verifier: verifier, logger: logger, origins: origins, inboundDomain: cfg.InboundDomain, inboundAddress: strings.ToLower(strings.TrimSpace(cfg.InboundAddress)), inboundOwnerID: cfg.InboundOwnerID, resendWebhookSecret: cfg.ResendWebhookSecret, calendar: cfg.Calendar, imports: cfg.ImportProcessor, cronSecret: cfg.CronSecret, cronBudget: cfg.CronBudget, appURL: cfg.AppURL}
 	r := chi.NewRouter()
 	r.Use(a.recoverer, a.cors, a.requestLog)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +73,11 @@ func New(st *store.Store, verifier *auth.Verifier, logger *slog.Logger, cfg Conf
 	})
 	r.Post("/webhooks/resend/email-received", a.resendWebhook)
 	r.Get("/calendar/callback", a.calendarCallback)
+	if cfg.CronSecret != "" {
+		// Vercel Cron issues GET; allow POST so the endpoint can be triggered by hand.
+		r.Get("/internal/cron/worker", a.runWorkerPass)
+		r.Post("/internal/cron/worker", a.runWorkerPass)
+	}
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(a.authenticate)
 		r.Get("/me", a.me)
@@ -126,6 +141,79 @@ func stripBasePath(prefix string, next http.Handler) http.Handler {
 		routed.URL.RawPath = ""
 		next.ServeHTTP(w, routed)
 	})
+}
+
+// runWorkerPass drains the import and calendar queues until they are empty or the
+// time budget runs out. Hosts that suspend a process between requests cannot run a
+// background ticker, so a scheduler calls this instead. Each pass reclaims stale
+// leases first, then alternates queues so neither starves the other.
+func (a *API) runWorkerPass(w http.ResponseWriter, r *http.Request) {
+	if a.cronSecret == "" || !constantTimeMatch(bearerToken(r), a.cronSecret) {
+		fail(w, http.StatusUnauthorized, "invalid worker credentials")
+		return
+	}
+	budget := a.cronBudget
+	if budget <= 0 {
+		budget = 50 * time.Second
+	}
+	// Detach from the request: a client hanging up must not abandon a claimed
+	// import mid-flight and strand it until its lease expires.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), budget)
+	defer cancel()
+
+	started := time.Now()
+	result := map[string]any{"imports": 0, "calendars": 0, "errors": []string{}}
+	failures := []string{}
+	if a.imports != nil {
+		if err := a.imports.ReclaimStale(ctx); err != nil {
+			failures = append(failures, "reclaim: "+err.Error())
+		}
+	}
+	for ctx.Err() == nil {
+		worked := false
+		if a.imports != nil {
+			did, err := a.imports.ProcessNext(ctx)
+			if err != nil {
+				failures = append(failures, "import: "+err.Error())
+				a.logger.Error("worker pass: import failed", "error", err)
+			}
+			if did {
+				result["imports"] = result["imports"].(int) + 1
+				worked = true
+			}
+		}
+		if a.calendar != nil && ctx.Err() == nil {
+			did, err := a.calendar.SyncNext(ctx)
+			if err != nil {
+				failures = append(failures, "calendar: "+err.Error())
+				a.logger.Error("worker pass: calendar sync failed", "error", err)
+			}
+			if did {
+				result["calendars"] = result["calendars"].(int) + 1
+				worked = true
+			}
+		}
+		if !worked {
+			break
+		}
+	}
+	result["errors"] = failures
+	result["elapsedSeconds"] = time.Since(started).Round(time.Millisecond).Seconds()
+	result["budgetExhausted"] = ctx.Err() != nil
+	a.logger.Info("worker pass complete", "imports", result["imports"], "calendars", result["calendars"],
+		"elapsedSeconds", result["elapsedSeconds"], "budgetExhausted", result["budgetExhausted"], "failures", len(failures))
+	respond(w, http.StatusOK, result)
+}
+
+func bearerToken(r *http.Request) string {
+	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		return token
+	}
+	return r.URL.Query().Get("token")
+}
+
+func constantTimeMatch(candidate, expected string) bool {
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(expected)) == 1
 }
 
 func (a *API) calendarConnect(w http.ResponseWriter, r *http.Request) {
@@ -259,6 +347,7 @@ func (a *API) resendWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusAccepted)
 }
+
 // importToken pulls the token out of imports-<token>@domain. Tokens are
 // base64url and therefore case-sensitive, so only the prefix match may ignore
 // case — lowercasing the whole address destroys the token.

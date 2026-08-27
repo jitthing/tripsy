@@ -50,13 +50,20 @@ func main() {
 
 	server := &http.Server{
 		Addr:              ":" + env("PORT", "8080"),
-		Handler:           api.New(st, verifier, logger, api.Config{AllowedOrigins: strings.Split(env("CORS_ORIGINS", "http://localhost:5173"), ","), InboundDomain: env("RESEND_INBOUND_DOMAIN", ""), InboundAddress: env("RESEND_INBOUND_ADDRESS", ""), InboundOwnerID: env("RESEND_INBOUND_OWNER_ID", ""), ResendWebhookSecret: env("RESEND_WEBHOOK_SECRET", ""), ImportProcessor: importProcessor, Calendar: calendarService, AppURL: env("APP_URL", "http://localhost:5173"), BasePath: env("API_BASE_PATH", "")}),
+		Handler:           api.New(st, verifier, logger, api.Config{AllowedOrigins: strings.Split(env("CORS_ORIGINS", "http://localhost:5173"), ","), InboundDomain: env("RESEND_INBOUND_DOMAIN", ""), InboundAddress: env("RESEND_INBOUND_ADDRESS", ""), InboundOwnerID: env("RESEND_INBOUND_OWNER_ID", ""), ResendWebhookSecret: env("RESEND_WEBHOOK_SECRET", ""), ImportProcessor: importProcessor, Calendar: calendarService, AppURL: env("APP_URL", "http://localhost:5173"), BasePath: env("API_BASE_PATH", ""), CronSecret: env("CRON_SECRET", ""), CronBudget: time.Duration(envInt("CRON_BUDGET_SECONDS", 50)) * time.Second}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	go runWorkers(ctx, logger, importProcessor, calendarService)
+	// A background ticker only advances while the process is scheduled. Hosts that
+	// suspend between requests must drive the worker from a scheduler instead, via
+	// the /internal/cron/worker endpoint.
+	if strings.EqualFold(env("WORKER_MODE", "loop"), "cron") {
+		logger.Info("background worker disabled; expecting scheduled calls to /internal/cron/worker")
+	} else {
+		go runWorkers(ctx, logger, importProcessor, calendarService)
+	}
 
 	go func() {
 		logger.Info("API listening", "address", server.Addr)

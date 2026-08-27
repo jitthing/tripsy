@@ -96,21 +96,28 @@ func (s *Service) SyncUser(ctx context.Context, userID string) error {
 	return s.RunOnce(ctx)
 }
 func (s *Service) RunOnce(ctx context.Context) error {
+	_, err := s.SyncNext(ctx)
+	return err
+}
+
+// SyncNext runs at most one queued calendar sync. The bool reports whether one
+// was claimed, so a caller draining the queue knows when it is empty.
+func (s *Service) SyncNext(ctx context.Context) (bool, error) {
 	if s == nil {
-		return nil
+		return false, nil
 	}
 	connection, err := s.store.ClaimCalendarSync(ctx)
 	if err == store.ErrNotFound {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err = s.exportPlans(ctx, connection); err != nil {
 		_ = s.store.FailCalendarSync(ctx, connection.ID, err)
-		return err
+		return true, err
 	}
-	return s.store.CompleteCalendarSync(ctx, connection.ID, connection.SyncToken)
+	return true, s.store.CompleteCalendarSync(ctx, connection.ID, connection.SyncToken)
 }
 func (s *Service) exportPlans(ctx context.Context, connection store.CalendarConnection) error {
 	refresh, err := s.decrypt(connection.EncryptedRefreshToken)
