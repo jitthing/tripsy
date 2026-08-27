@@ -122,6 +122,8 @@ h2 { margin-bottom: 0; font-size: 25px; line-height: 1.1; }
 .day-group .group-label { margin: 0 0 7px; }
 .day-strip button b { font-variant-numeric: tabular-nums; }
 
+.inbox-working { display: flex; align-items: center; gap: 7px; margin: -8px 0 14px; color: #5d7d73; font-size: 11px; }
+
 /* Suggested trip from a forwarded email. */
 .suggested-trip { display: flex; align-items: center; gap: 12px; margin: 12px 0; padding: 13px; background: #edf4ee; border: 1px dashed #9ec4b2; border-radius: 14px; }
 .suggested-trip > div { flex: 1; min-width: 0; }

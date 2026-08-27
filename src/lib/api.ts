@@ -58,6 +58,7 @@ export const api = {
   deleteRouteOption: (tripId: string, optionId: string) => request<void>(`/v1/trips/${tripId}/route-options/${optionId}`, { method: 'DELETE' }),
   getImportAddress: (tripId: string) => request<{ address: string }>(`/v1/trips/${tripId}/import-address`, { method: 'POST' }),
   getInboxAddress: () => request<{ address: string }>('/v1/inbox/address', { method: 'POST' }),
+  processInbox: () => request<{ processed: number; pending: number }>('/v1/inbox/process', { method: 'POST' }),
   listImports: (tripId: string) => request<ReservationImport[]>(`/v1/trips/${tripId}/imports`),
   getImport: (importId: string) => request<ImportDetail>(`/v1/imports/${importId}`),
   retryImport: (importId: string) => request<{ status: string }>(`/v1/imports/${importId}/retry`, { method: 'POST' }),
