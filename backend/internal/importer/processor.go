@@ -60,7 +60,18 @@ func (p *Processor) ReclaimStale(ctx context.Context) error {
 // ProcessNext handles at most one queued import. The bool reports whether an
 // import was claimed, so a caller draining the queue knows when it is empty.
 func (p *Processor) ProcessNext(ctx context.Context) (bool, error) {
-	item, err := p.Store.ClaimQueuedImport(ctx)
+	return p.processClaimed(ctx, func() (store.ReservationImport, error) { return p.Store.ClaimQueuedImport(ctx) })
+}
+
+// ProcessNextForOwner is ProcessNext restricted to one owner's queue.
+func (p *Processor) ProcessNextForOwner(ctx context.Context, ownerID string) (bool, error) {
+	return p.processClaimed(ctx, func() (store.ReservationImport, error) {
+		return p.Store.ClaimQueuedImportForOwner(ctx, ownerID)
+	})
+}
+
+func (p *Processor) processClaimed(ctx context.Context, claim func() (store.ReservationImport, error)) (bool, error) {
+	item, err := claim()
 	if err == store.ErrNotFound {
 		return false, nil
 	}

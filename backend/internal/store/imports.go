@@ -147,16 +147,38 @@ func (s *Store) MarkPotentialDuplicate(ctx context.Context, importID, ownerID st
 }
 
 func (s *Store) ClaimQueuedImport(ctx context.Context) (ReservationImport, error) {
+	return s.claimQueued(ctx, "")
+}
+
+// ClaimQueuedImportForOwner claims only the caller's own work. A user-triggered
+// pass must not drain another owner's queue or spend extraction budget for them.
+func (s *Store) ClaimQueuedImportForOwner(ctx context.Context, ownerID string) (ReservationImport, error) {
+	return s.claimQueued(ctx, ownerID)
+}
+
+func (s *Store) claimQueued(ctx context.Context, ownerID string) (ReservationImport, error) {
 	var item ReservationImport
+	filter, args := "", []any{}
+	if ownerID != "" {
+		filter, args = " and owner_id=$1", []any{ownerID}
+	}
 	err := s.DB.QueryRow(ctx, `with next as (
-      select id from reservation_imports where status='queued' order by created_at for update skip locked limit 1
+      select id from reservation_imports where status='queued'`+filter+` order by created_at for update skip locked limit 1
     ) update reservation_imports i set status='processing',stage='processing',locked_at=now(),attempts=attempts+1 from next where i.id=next.id
-      returning `+importColumnsAliased).
+      returning `+importColumnsAliased, args...).
 		Scan(&item.ID, &item.TripID, &item.OwnerID, &item.ExternalEmailID, &item.Sender, &item.Subject, &item.ReceivedAt, &item.RawStoragePath, &item.TextStoragePath, &item.Status, &item.Stage, &item.ErrorMessage, &item.DuplicateOfID, &item.UsedLLM, &item.CreatedAt, &item.ExtractionError, &item.Attempts, &item.LockedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReservationImport{}, ErrNotFound
 	}
 	return item, err
+}
+
+// PendingImportCount reports work still in flight for an owner, so the client
+// knows whether to keep watching rather than polling blindly.
+func (s *Store) PendingImportCount(ctx context.Context, ownerID string) (int, error) {
+	var count int
+	err := s.DB.QueryRow(ctx, `select count(*) from reservation_imports where owner_id=$1 and status in ('queued','processing')`, ownerID).Scan(&count)
+	return count, err
 }
 
 func (s *Store) CompleteImport(ctx context.Context, importID, rawPath, textPath string, usedLLM bool, extractionError string, drafts []ReservationDraft, attachments []ImportAttachment) error {

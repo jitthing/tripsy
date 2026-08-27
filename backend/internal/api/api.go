@@ -40,6 +40,9 @@ type Config struct {
 	// CronBudget caps how long one worker invocation spends draining queues. Keep
 	// it below the host's function timeout so the response is always written.
 	CronBudget time.Duration
+	// InboxBudget caps a user-triggered pass. Shorter than CronBudget: someone is
+	// waiting on the response.
+	InboxBudget time.Duration
 }
 type API struct {
 	store               *store.Store
@@ -54,6 +57,7 @@ type API struct {
 	imports             *importer.Processor
 	cronSecret          string
 	cronBudget          time.Duration
+	inboxBudget         time.Duration
 	appURL              string
 }
 type contextKey string
@@ -65,7 +69,7 @@ func New(st *store.Store, verifier *auth.Verifier, logger *slog.Logger, cfg Conf
 	for _, origin := range cfg.AllowedOrigins {
 		origins[strings.TrimSpace(origin)] = true
 	}
-	a := &API{store: st, verifier: verifier, logger: logger, origins: origins, inboundDomain: cfg.InboundDomain, inboundAddress: strings.ToLower(strings.TrimSpace(cfg.InboundAddress)), inboundOwnerID: cfg.InboundOwnerID, resendWebhookSecret: cfg.ResendWebhookSecret, calendar: cfg.Calendar, imports: cfg.ImportProcessor, cronSecret: cfg.CronSecret, cronBudget: cfg.CronBudget, appURL: cfg.AppURL}
+	a := &API{store: st, verifier: verifier, logger: logger, origins: origins, inboundDomain: cfg.InboundDomain, inboundAddress: strings.ToLower(strings.TrimSpace(cfg.InboundAddress)), inboundOwnerID: cfg.InboundOwnerID, resendWebhookSecret: cfg.ResendWebhookSecret, calendar: cfg.Calendar, imports: cfg.ImportProcessor, cronSecret: cfg.CronSecret, cronBudget: cfg.CronBudget, inboxBudget: cfg.InboxBudget, appURL: cfg.AppURL}
 	r := chi.NewRouter()
 	r.Use(a.recoverer, a.cors, a.requestLog)
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +88,7 @@ func New(st *store.Store, verifier *auth.Verifier, logger *slog.Logger, cfg Conf
 		r.Get("/trips", a.listTrips)
 		r.Get("/inbox", a.listInbox)
 		r.Post("/inbox/address", a.inboxAddress)
+		r.Post("/inbox/process", a.processInbox)
 		r.Post("/trips", a.createTrip)
 		r.Route("/trips/{tripID}", func(r chi.Router) {
 			r.Get("/", a.tripDetail)
@@ -203,6 +208,50 @@ func (a *API) runWorkerPass(w http.ResponseWriter, r *http.Request) {
 	a.logger.Info("worker pass complete", "imports", result["imports"], "calendars", result["calendars"],
 		"elapsedSeconds", result["elapsedSeconds"], "budgetExhausted", result["budgetExhausted"], "failures", len(failures))
 	respond(w, http.StatusOK, result)
+}
+
+// inboxPassLimit caps one user-triggered pass. The scheduled worker picks up
+// anything beyond it, so a large forward batch cannot turn one page load into an
+// unbounded run of paid extractions.
+const inboxPassLimit = 3
+
+// processInbox runs the worker against the caller's own queue. The scheduled
+// worker remains the guarantee; this exists so a forward is handled while the
+// person who sent it is still looking at the screen.
+func (a *API) processInbox(w http.ResponseWriter, r *http.Request) {
+	if a.imports == nil {
+		fail(w, http.StatusServiceUnavailable, "reservation imports are not configured")
+		return
+	}
+	budget := a.inboxBudget
+	if budget <= 0 {
+		budget = 20 * time.Second
+	}
+	owner := userID(r)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), budget)
+	defer cancel()
+
+	if err := a.imports.ReclaimStale(ctx); err != nil {
+		a.logger.Error("inbox pass: reclaim failed", "error", err)
+	}
+	processed := 0
+	for processed < inboxPassLimit && ctx.Err() == nil {
+		did, err := a.imports.ProcessNextForOwner(ctx, owner)
+		if err != nil {
+			// The import records its own failure; the caller just needs the count.
+			a.logger.Error("inbox pass: import failed", "ownerID", owner, "error", err)
+		}
+		if !did {
+			break
+		}
+		processed++
+	}
+	pending, err := a.store.PendingImportCount(ctx, owner)
+	if err != nil {
+		a.handleError(w, err)
+		return
+	}
+	respond(w, http.StatusOK, map[string]any{"processed": processed, "pending": pending})
 }
 
 func bearerToken(r *http.Request) string {
